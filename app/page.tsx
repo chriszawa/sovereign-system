@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import type { Session } from "@supabase/supabase-js";
 import {
   Area,
   AreaChart,
@@ -33,13 +34,18 @@ import {
   Target,
   TrendingUp,
   Trophy,
+  UserRound,
+  Users,
   X,
 } from "lucide-react";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
-type Tab = "dashboard" | "analytics" | "inventory" | "settings";
+type Tab = "dashboard" | "analytics" | "inventory" | "social" | "settings";
 type Difficulty = "Facil" | "Medio" | "Dificil" | "Extremo";
 type Rarity = "Comum" | "Raro" | "Epico" | "Lendario";
 type LootType = "consumivel" | "reliquia" | "material";
+type AuthMode = "login" | "register";
+type FriendshipStatus = "pending" | "accepted" | "rejected";
 
 type Stat = { subject: string; A: number };
 
@@ -63,6 +69,31 @@ type LootItem = {
 };
 
 type InventoryEntry = LootItem & { qty: number };
+
+type Profile = {
+  id: string;
+  username: string;
+  hunter_name: string;
+  avatar_url: string | null;
+};
+
+type SocialPost = {
+  id: string;
+  author_id: string;
+  hunter_name_snapshot: string;
+  avatar_url_snapshot: string | null;
+  content: string;
+  created_at: string;
+  level_snapshot: number;
+  power_snapshot: number;
+};
+
+type Friendship = {
+  id: string;
+  requester_id: string;
+  addressee_id: string;
+  status: FriendshipStatus;
+};
 
 const STORAGE_KEYS = {
   xp: "sf_xp",
@@ -242,6 +273,20 @@ export default function SovereignApp() {
   const [isClient, setIsClient] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
 
+  const [authMode, setAuthMode] = useState<AuthMode>("login");
+  const [session, setSession] = useState<Session | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<string | null>(null);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authUser, setAuthUser] = useState("");
+  const [authPass, setAuthPass] = useState("");
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  const [hunterName, setHunterName] = useState("CACADOR");
+  const [hunterNameDraft, setHunterNameDraft] = useState("CACADOR");
+  const [avatarDataUrl, setAvatarDataUrl] = useState<string | null>(null);
+
   const [xp, setXp] = useState(0);
   const [level, setLevel] = useState(1);
   const [stats, setStats] = useState<Stat[]>(BASE_STATS);
@@ -260,6 +305,14 @@ export default function SovereignApp() {
   const [gold, setGold] = useState(60);
   const [activeRelicId, setActiveRelicId] = useState<string | null>(null);
   const [lootResult, setLootResult] = useState<string | null>(null);
+
+  const [friendships, setFriendships] = useState<Friendship[]>([]);
+  const [profilesById, setProfilesById] = useState<Record<string, Profile>>({});
+  const [socialPosts, setSocialPosts] = useState<SocialPost[]>([]);
+  const [friendInput, setFriendInput] = useState("");
+  const [newStatus, setNewStatus] = useState("");
+  const [socialFeedback, setSocialFeedback] = useState<string | null>(null);
+  const [socialLoading, setSocialLoading] = useState(false);
 
   useEffect(() => {
     setIsClient(true);
@@ -298,6 +351,34 @@ export default function SovereignApp() {
     setInventory(safeParse<InventoryEntry[]>(localStorage.getItem(STORAGE_KEYS.inventory), []));
     setGold(Math.max(0, safeInt(localStorage.getItem(STORAGE_KEYS.gold), 60)));
     setActiveRelicId(localStorage.getItem(STORAGE_KEYS.activeRelicId));
+
+    if (!isSupabaseConfigured || !supabase) {
+      setAuthLoading(false);
+      return;
+    }
+
+    void supabase.auth.getSession().then(async ({ data }) => {
+      const activeSession = data.session ?? null;
+      setSession(activeSession);
+      if (activeSession?.user) {
+        await loadProfile(activeSession.user.id);
+      }
+      setAuthLoading(false);
+    });
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      if (nextSession?.user) {
+        void loadProfile(nextSession.user.id);
+      } else {
+        setCurrentUserId(null);
+        setCurrentUser(null);
+      }
+    });
+
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -342,6 +423,30 @@ export default function SovereignApp() {
 
   const todayActivity = activityLog[getTodayStr()] || 0;
 
+  const acceptedFriendships = useMemo(
+    () => friendships.filter((f) => f.status === "accepted"),
+    [friendships]
+  );
+
+  const pendingIncoming = useMemo(
+    () => friendships.filter((f) => f.status === "pending" && f.addressee_id === currentUserId),
+    [friendships, currentUserId]
+  );
+
+  const myFriends = useMemo(() => {
+    if (!currentUserId) return [] as Array<{ friendshipId: string; profile: Profile }>;
+    return acceptedFriendships
+      .map((f) => {
+        const friendId = f.requester_id === currentUserId ? f.addressee_id : f.requester_id;
+        const profile = profilesById[friendId];
+        if (!profile) return null;
+        return { friendshipId: f.id, profile };
+      })
+      .filter((v): v is { friendshipId: string; profile: Profile } => Boolean(v));
+  }, [acceptedFriendships, profilesById, currentUserId]);
+
+  const socialFeed = useMemo(() => socialPosts, [socialPosts]);
+
   const getRank = () => {
     if (powerScore < 80) return { title: "RANK E", color: "text-slate-400" };
     if (powerScore < 220) return { title: "RANK D", color: "text-emerald-300" };
@@ -351,6 +456,349 @@ export default function SovereignApp() {
     return { title: "RANK S", color: "text-amber-300" };
   };
 
+  const getPublicProfile = async (userId: string): Promise<Profile> => {
+    if (!supabase) throw new Error("Supabase nao configurado.");
+
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id, username, hunter_name, avatar_url")
+      .eq("id", userId)
+      .maybeSingle();
+
+    if (error) throw error;
+
+    if (data) return data as Profile;
+
+    const fallbackUsername = `user_${userId.slice(0, 8)}`;
+    const fallbackProfile: Profile = {
+      id: userId,
+      username: fallbackUsername,
+      hunter_name: fallbackUsername.toUpperCase(),
+      avatar_url: null,
+    };
+
+    const { error: insertError } = await supabase.from("profiles").insert(fallbackProfile);
+    if (insertError) throw insertError;
+    return fallbackProfile;
+  };
+
+  const loadProfile = async (userId: string) => {
+    try {
+      const profile = await getPublicProfile(userId);
+      setCurrentUserId(profile.id);
+      setCurrentUser(profile.username);
+      setHunterName(profile.hunter_name || "CACADOR");
+      setHunterNameDraft(profile.hunter_name || "CACADOR");
+      setAvatarDataUrl(profile.avatar_url || null);
+    } catch (error) {
+      console.error(error);
+      setAuthError("Falha ao carregar perfil.");
+    }
+  };
+
+  const loadSocialData = async (userId: string) => {
+    if (!supabase) return;
+    setSocialLoading(true);
+
+    const { data: friendshipRows, error: friendshipError } = await supabase
+      .from("friendships")
+      .select("id, requester_id, addressee_id, status")
+      .or(`requester_id.eq.${userId},addressee_id.eq.${userId}`);
+
+    if (friendshipError) {
+      setSocialFeedback("Erro ao carregar amizades.");
+      setSocialLoading(false);
+      return;
+    }
+
+    const allFriendships = (friendshipRows || []) as Friendship[];
+    setFriendships(allFriendships);
+
+    const accepted = allFriendships.filter((f) => f.status === "accepted");
+    const pendingIncoming = allFriendships.filter((f) => f.status === "pending" && f.addressee_id === userId);
+
+    const profileIds = new Set<string>();
+    profileIds.add(userId);
+    accepted.forEach((f) => profileIds.add(f.requester_id === userId ? f.addressee_id : f.requester_id));
+    pendingIncoming.forEach((f) => profileIds.add(f.requester_id));
+
+    let map: Record<string, Profile> = {};
+    const ids = [...profileIds];
+    if (ids.length > 0) {
+      const { data: profileRows } = await supabase
+        .from("profiles")
+        .select("id, username, hunter_name, avatar_url")
+        .in("id", ids);
+      map = (profileRows || []).reduce<Record<string, Profile>>((acc, row) => {
+        const p = row as Profile;
+        acc[p.id] = p;
+        return acc;
+      }, {});
+    }
+    setProfilesById(map);
+
+    const authorIds = [userId, ...accepted.map((f) => (f.requester_id === userId ? f.addressee_id : f.requester_id))];
+    const uniqueAuthorIds = [...new Set(authorIds)];
+
+    if (uniqueAuthorIds.length > 0) {
+      const { data: postRows } = await supabase
+        .from("posts")
+        .select("id, author_id, hunter_name_snapshot, avatar_url_snapshot, content, created_at, level_snapshot, power_snapshot")
+        .in("author_id", uniqueAuthorIds)
+        .order("created_at", { ascending: false })
+        .limit(100);
+
+      setSocialPosts((postRows || []) as SocialPost[]);
+    } else {
+      setSocialPosts([]);
+    }
+
+    setSocialLoading(false);
+  };
+
+  useEffect(() => {
+    if (!currentUserId) return;
+    void loadSocialData(currentUserId);
+  }, [currentUserId]);
+
+  const handleAuth = async () => {
+    if (!supabase || !isSupabaseConfigured) {
+      setAuthError("Configure Supabase para continuar.");
+      return;
+    }
+
+    const email = authEmail.trim().toLowerCase();
+    const password = authPass.trim();
+    const username = authUser.trim().toLowerCase();
+
+    if (!email.includes("@") || password.length < 6) {
+      setAuthError("Use email valido e senha com ao menos 6 caracteres.");
+      return;
+    }
+
+    setAuthError(null);
+
+    if (authMode === "register") {
+      if (username.length < 3) {
+        setAuthError("Usuario precisa ter pelo menos 3 caracteres.");
+        return;
+      }
+
+      const { data: userExists } = await supabase
+        .from("profiles")
+        .select("id")
+        .eq("username", username)
+        .maybeSingle();
+
+      if (userExists) {
+        setAuthError("Esse usuario ja esta em uso.");
+        return;
+      }
+
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+      });
+
+      if (error) {
+        setAuthError(error.message);
+        return;
+      }
+
+      const createdUser = data.user;
+      if (!createdUser) {
+        setAuthError("Conta criada. Verifique seu email para confirmar e depois faça login.");
+        return;
+      }
+
+      const { error: profileError } = await supabase.from("profiles").upsert({
+        id: createdUser.id,
+        username,
+        hunter_name: username.toUpperCase(),
+        avatar_url: null,
+      });
+
+      if (profileError) {
+        setAuthError(profileError.message);
+        return;
+      }
+
+      setAuthError("Conta criada. Faça login para entrar.");
+      setAuthMode("login");
+      setAuthPass("");
+      return;
+    }
+
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (error) {
+      setAuthError(error.message);
+      return;
+    }
+
+    setSession(data.session ?? null);
+    if (data.user) await loadProfile(data.user.id);
+    setAuthPass("");
+  };
+
+  const logout = async () => {
+    if (supabase) await supabase.auth.signOut();
+    setSession(null);
+    setCurrentUserId(null);
+    setCurrentUser(null);
+    setAuthMode("login");
+    setAuthUser("");
+    setAuthEmail("");
+    setAuthPass("");
+    setAuthError(null);
+    setActiveTab("dashboard");
+  };
+
+  const updateProfile = async () => {
+    if (!supabase || !currentUserId) return;
+    const cleanName = hunterNameDraft.trim();
+    if (!cleanName) return;
+
+    const { error } = await supabase
+      .from("profiles")
+      .update({
+        hunter_name: cleanName.toUpperCase(),
+        avatar_url: avatarDataUrl,
+      })
+      .eq("id", currentUserId);
+
+    if (error) {
+      setSocialFeedback("Nao foi possivel salvar o perfil.");
+      return;
+    }
+
+    setHunterName(cleanName.toUpperCase());
+    await loadProfile(currentUserId);
+    await loadSocialData(currentUserId);
+  };
+
+  const onAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : null;
+      if (!result) return;
+      setAvatarDataUrl(result);
+    };
+
+    reader.readAsDataURL(file);
+  };
+
+  const addFriend = async () => {
+    if (!supabase || !currentUserId) return;
+
+    const username = friendInput.trim().toLowerCase();
+    if (!username) {
+      setSocialFeedback("Digite um usuario para adicionar.");
+      return;
+    }
+
+    const { data: target, error: targetError } = await supabase
+      .from("profiles")
+      .select("id, username, hunter_name, avatar_url")
+      .eq("username", username)
+      .maybeSingle();
+
+    if (targetError || !target) {
+      setSocialFeedback("Usuario nao encontrado.");
+      return;
+    }
+
+    if (target.id === currentUserId) {
+      setSocialFeedback("Voce nao pode adicionar a si mesmo.");
+      return;
+    }
+
+    const { data: existing } = await supabase
+      .from("friendships")
+      .select("id, requester_id, addressee_id, status")
+      .or(`and(requester_id.eq.${currentUserId},addressee_id.eq.${target.id}),and(requester_id.eq.${target.id},addressee_id.eq.${currentUserId})`)
+      .maybeSingle();
+
+    if (existing) {
+      if (existing.status === "pending" && existing.requester_id === target.id) {
+        await supabase.from("friendships").update({ status: "accepted" }).eq("id", existing.id);
+        setSocialFeedback("Solicitacao aceita automaticamente.");
+      } else {
+        setSocialFeedback("Vocês ja tem uma conexao pendente ou ativa.");
+      }
+      await loadSocialData(currentUserId);
+      return;
+    }
+
+    const { error } = await supabase.from("friendships").insert({
+      requester_id: currentUserId,
+      addressee_id: target.id,
+      status: "pending",
+    });
+
+    if (error) {
+      setSocialFeedback("Erro ao enviar solicitacao.");
+      return;
+    }
+
+    setSocialFeedback("Solicitacao enviada.");
+    setFriendInput("");
+    await loadSocialData(currentUserId);
+  };
+
+  const acceptFriend = async (friendshipId: string) => {
+    if (!supabase || !currentUserId) return;
+    await supabase
+      .from("friendships")
+      .update({ status: "accepted" })
+      .eq("id", friendshipId)
+      .eq("addressee_id", currentUserId);
+    await loadSocialData(currentUserId);
+  };
+
+  const removeFriend = async (friendshipId: string) => {
+    if (!supabase || !currentUserId) return;
+    await supabase.from("friendships").delete().eq("id", friendshipId);
+    await loadSocialData(currentUserId);
+  };
+
+  const postStatus = async () => {
+    if (!supabase || !currentUserId) return;
+    const content = newStatus.trim();
+    if (!content) {
+      setSocialFeedback("Escreva um status antes de publicar.");
+      return;
+    }
+
+    const { error } = await supabase.from("posts").insert({
+      author_id: currentUserId,
+      hunter_name_snapshot: hunterName,
+      avatar_url_snapshot: avatarDataUrl,
+      content,
+      level_snapshot: level,
+      power_snapshot: powerScore,
+    });
+
+    if (error) {
+      setSocialFeedback("Nao foi possivel publicar.");
+      return;
+    }
+
+    setNewStatus("");
+    setSocialFeedback("Status publicado.");
+    await loadSocialData(currentUserId);
+  };
+
+  const fillProgressStatus = () => {
+    const rank = getRank().title;
+    setNewStatus(`Nivel ${level} | ${rank} | Power ${powerScore} | Quests ${completedQuests.length}/${quests.length}`);
+  };
   const addToInventory = (loot: LootItem) => {
     setInventory((prev) => {
       const found = prev.find((p) => p.id === loot.id);
@@ -503,6 +951,48 @@ export default function SovereignApp() {
 
   if (!isClient) return null;
 
+  if (!isSupabaseConfigured) {
+    return (
+      <div className="cyber-bg min-h-screen px-3 py-6 md:px-6 lg:px-10 text-slate-100">
+        <div className="mx-auto max-w-md">
+          <p className="hud-topline">SISTEMA SOLO LEVELING</p>
+          <section className="hud-panel p-6 space-y-3">
+            <h1 className="hud-title text-cyan-200"><UserRound size={16} /> Configurar Supabase</h1>
+            <p className="text-sm text-slate-300">Defina NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY no arquivo .env.local.</p>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
+  if (authLoading || !session || !currentUser) {
+    return (
+      <div className="cyber-bg min-h-screen px-3 py-6 md:px-6 lg:px-10 text-slate-100">
+        <div className="mx-auto max-w-md">
+          <p className="hud-topline">SISTEMA SOLO LEVELING</p>
+          <section className="hud-panel p-6">
+            <h1 className="hud-title text-cyan-200 mb-4">
+              <UserRound size={16} /> Acesso do Cacador
+            </h1>
+            <div className="hud-tabs mb-4">
+              <button onClick={() => setAuthMode("login")} className={`hud-tab flex-1 ${authMode === "login" ? "hud-tab-active" : ""}`}>Login</button>
+              <button onClick={() => setAuthMode("register")} className={`hud-tab flex-1 ${authMode === "register" ? "hud-tab-active" : ""}`}>Cadastro</button>
+            </div>
+            <div className="space-y-3">
+              <input value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} placeholder="Email" className="hud-input" />
+              {authMode === "register" && (
+                <input value={authUser} onChange={(e) => setAuthUser(e.target.value)} placeholder="Usuario publico" className="hud-input" />
+              )}
+              <input value={authPass} onChange={(e) => setAuthPass(e.target.value)} placeholder="Senha" type="password" className="hud-input" />
+              {authError && <p className="text-xs text-rose-300">{authError}</p>}
+              <button onClick={() => void handleAuth()} className="hud-action-btn" disabled={authLoading}>{authMode === "login" ? "ENTRAR" : "CRIAR CONTA"}</button>
+            </div>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
   const rank = getRank();
 
   return (
@@ -513,11 +1003,16 @@ export default function SovereignApp() {
         <header className="hud-panel p-5 md:p-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="flex gap-4 items-start">
-              <div className="hud-avatar">
-                <Sparkles className="text-cyan-300" size={20} />
+              <div className="hud-avatar overflow-hidden">
+                {avatarDataUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={avatarDataUrl} alt="avatar" className="h-full w-full object-cover" />
+                ) : (
+                  <Sparkles className="text-cyan-300" size={20} />
+                )}
               </div>
               <div>
-                <h1 className="text-3xl md:text-4xl font-black tracking-[0.08em] text-cyan-200">CACADOR</h1>
+                <h1 className="text-3xl md:text-4xl font-black tracking-[0.08em] text-cyan-200">{hunterName}</h1>
                 <p className="mt-1 text-xs uppercase tracking-[0.22em] text-fuchsia-300">{rank.title}</p>
                 <p className="mt-2 text-sm text-slate-400 italic">"Iniciado das sombras"</p>
                 <p className="mt-2 text-xs uppercase tracking-[0.2em] text-slate-300">Nivel {level}</p>
@@ -565,6 +1060,9 @@ export default function SovereignApp() {
           <button onClick={() => setActiveTab("inventory")} className={`hud-tab ${activeTab === "inventory" ? "hud-tab-active" : ""}`}>
             <Backpack size={16} /> Inventario
           </button>
+          <button onClick={() => setActiveTab("social")} className={`hud-tab ${activeTab === "social" ? "hud-tab-active" : ""}`}>
+            <Users size={16} /> Social
+          </button>
           <button onClick={() => setActiveTab("settings")} className={`hud-tab ${activeTab === "settings" ? "hud-tab-active" : ""}`}>
             <Settings2 size={16} /> Config
           </button>
@@ -583,6 +1081,9 @@ export default function SovereignApp() {
                 </button>
                 <button onClick={() => setActiveTab("inventory")} className={`hud-tab w-full justify-start ${activeTab === "inventory" ? "hud-tab-active" : ""}`}>
                   <Backpack size={16} /> Inventario
+                </button>
+                <button onClick={() => setActiveTab("social")} className={`hud-tab w-full justify-start ${activeTab === "social" ? "hud-tab-active" : ""}`}>
+                  <Users size={16} /> Social
                 </button>
                 <button onClick={() => setActiveTab("settings")} className={`hud-tab w-full justify-start ${activeTab === "settings" ? "hud-tab-active" : ""}`}>
                   <Settings2 size={16} /> Configuracoes
@@ -805,15 +1306,160 @@ export default function SovereignApp() {
               </section>
             )}
 
+            {activeTab === "social" && (
+              <div className="grid gap-4 xl:grid-cols-[1.4fr_1fr]">
+                <section className="hud-panel p-5">
+                  <h3 className="hud-title mb-4"><Users size={14} /> AREA SOCIAL</h3>
+
+                  <div className="hud-subpanel p-3 space-y-2 mb-4">
+                    <textarea
+                      value={newStatus}
+                      onChange={(e) => setNewStatus(e.target.value)}
+                      placeholder="Compartilhe seu progresso com seus amigos..."
+                      className="hud-input min-h-24 resize-y"
+                      maxLength={280}
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      <button onClick={fillProgressStatus} className="hud-mini-btn">Preencher com progresso</button>
+                      <button onClick={() => void postStatus()} className="hud-mini-btn !bg-cyan-700">Publicar</button>
+                    </div>
+                    <p className="text-[11px] text-slate-400">{newStatus.length}/280</p>
+                  </div>
+
+                  <div className="space-y-3 max-h-[520px] overflow-auto pr-1">
+                    {socialFeed.length === 0 && (
+                      <div className="hud-subpanel p-4 text-sm text-slate-400">
+                        Seu feed esta vazio. Adicione amigos e publique um status.
+                      </div>
+                    )}
+
+                    {socialFeed.map((post) => (
+                      <article key={post.id} className="hud-subpanel p-4">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-3">
+                            <div className="hud-avatar !w-10 !h-10 overflow-hidden">
+                              {post.avatar_url_snapshot ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img src={post.avatar_url_snapshot} alt="avatar" className="h-full w-full object-cover" />
+                              ) : (
+                                <Sparkles className="text-cyan-300" size={14} />
+                              )}
+                            </div>
+                            <div>
+                              <p className="text-sm font-bold text-cyan-100">{post.hunter_name_snapshot}</p>
+                              <p className="text-[11px] text-slate-400">@{profilesById[post.author_id]?.username || "user"}</p>
+                            </div>
+                          </div>
+                          <p className="text-[11px] text-slate-400">
+                            {new Date(post.created_at).toLocaleString("pt-BR", {
+                              day: "2-digit",
+                              month: "2-digit",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </p>
+                        </div>
+
+                        <p className="text-sm text-slate-100 mt-3 whitespace-pre-wrap">{post.content}</p>
+
+                        <div className="mt-3 flex flex-wrap gap-2 text-[11px] uppercase tracking-[0.16em] text-slate-300">
+                          <span className="hud-stat-mini !w-auto !px-3 !py-1">Nivel {post.level_snapshot}</span>
+                          <span className="hud-stat-mini !w-auto !px-3 !py-1">Power {post.power_snapshot}</span>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+
+                <aside className="space-y-4">
+                  <section className="hud-panel p-4">
+                    <h3 className="hud-title mb-3">AMIGOS</h3>
+                    <div className="flex gap-2 mb-3">
+                      <input
+                        value={friendInput}
+                        onChange={(e) => setFriendInput(e.target.value)}
+                        placeholder="Usuario do amigo"
+                        className="hud-input"
+                      />
+                      <button onClick={addFriend} className="hud-icon-btn"><Plus size={14} /></button>
+                    </div>
+
+                    {socialFeedback && <p className="text-xs text-cyan-200 mb-3">{socialFeedback}</p>}
+                    {socialLoading && <p className="text-xs text-slate-400 mb-3">Sincronizando social...</p>}
+
+                    {pendingIncoming.length > 0 && (
+                      <div className="space-y-2 mb-3">
+                        <p className="text-xs uppercase tracking-[0.14em] text-amber-300">Solicitacoes recebidas</p>
+                        {pendingIncoming.map((req) => (
+                          <div key={req.id} className="hud-subpanel p-3 flex items-center justify-between gap-2">
+                            <div>
+                              <p className="text-sm font-bold text-cyan-100">{profilesById[req.requester_id]?.hunter_name || "Novo Cacador"}</p>
+                              <p className="text-[11px] text-slate-500">@{profilesById[req.requester_id]?.username || "usuario"}</p>
+                            </div>
+                            <button onClick={() => void acceptFriend(req.id)} className="hud-mini-btn !bg-emerald-700">Aceitar</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="space-y-2">
+                      {myFriends.length === 0 && (
+                        <div className="hud-subpanel p-3 text-xs text-slate-400">Nenhum amigo adicionado.</div>
+                      )}
+
+                      {myFriends.map((friend) => (
+                        <div key={friend.profile.id} className="hud-subpanel p-3 flex items-center justify-between gap-2">
+                          <div>
+                            <p className="text-sm font-bold text-cyan-100">{friend.profile.hunter_name}</p>
+                            <p className="text-[11px] text-slate-500">@{friend.profile.username}</p>
+                            <p className="text-[11px] text-slate-400">Conectado ao seu feed</p>
+                          </div>
+                          <button onClick={() => void removeFriend(friend.friendshipId)} className="hud-mini-btn !bg-rose-900/60">Remover</button>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+
+                  <section className="hud-panel p-4">
+                    <h3 className="hud-title mb-2">RESUMO SOCIAL</h3>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="hud-chip">
+                        <span>AMIGOS</span>
+                        <strong className="text-cyan-200">{myFriends.length}</strong>
+                      </div>
+                      <div className="hud-chip">
+                        <span>POSTS</span>
+                        <strong className="text-fuchsia-200">{socialPosts.filter((p) => p.author_id === currentUserId).length}</strong>
+                      </div>
+                    </div>
+                  </section>
+                </aside>
+              </div>
+            )}
             {activeTab === "settings" && (
               <section className="hud-panel p-5 max-w-3xl">
                 <h3 className="hud-title mb-4"><Settings2 size={14} /> CONFIGURACOES</h3>
+
+                <div className="hud-subpanel p-4 space-y-4 mb-4">
+                  <p className="text-sm font-semibold text-slate-200">Perfil do cacador</p>
+                  <input
+                    value={hunterNameDraft}
+                    onChange={(e) => setHunterNameDraft(e.target.value)}
+                    className="hud-input"
+                    placeholder="Nome do cacador"
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    <input type="file" accept="image/*" onChange={onAvatarChange} className="hud-input max-w-sm" />
+                    <button onClick={updateProfile} className="hud-mini-btn">Salvar Perfil</button>
+                    <button onClick={logout} className="hud-mini-btn !bg-slate-700">Sair</button>
+                  </div>
+                </div>
 
                 <div className="hud-subpanel p-4 space-y-4">
                   <div>
                     <p className="text-sm font-semibold text-slate-200">Resetar progresso</p>
                     <p className="text-xs text-slate-400 mt-1">
-                      Remove XP, nivel, missoes, inventario, boss semanal e dados salvos no navegador.
+                      Remove XP, nivel, missoes, inventario, boss semanal e dados salvos deste usuario.
                     </p>
                   </div>
 
@@ -847,6 +1493,42 @@ export default function SovereignApp() {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
