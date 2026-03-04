@@ -26,6 +26,7 @@ import {
   LayoutDashboard,
   PackageOpen,
   Plus,
+  Settings2,
   Shield,
   Skull,
   Sparkles,
@@ -35,7 +36,7 @@ import {
   X,
 } from "lucide-react";
 
-type Tab = "dashboard" | "analytics" | "inventory";
+type Tab = "dashboard" | "analytics" | "inventory" | "settings";
 type Difficulty = "Facil" | "Medio" | "Dificil" | "Extremo";
 type Rarity = "Comum" | "Raro" | "Epico" | "Lendario";
 type LootType = "consumivel" | "reliquia" | "material";
@@ -86,6 +87,7 @@ const BASE_STATS: Stat[] = [
   { subject: "Social", A: 10 },
   { subject: "Criatividade", A: 10 },
 ];
+
 const STAT_NAMES = BASE_STATS.map((s) => s.subject);
 
 const DIFFICULTY_MAP: Record<
@@ -95,7 +97,7 @@ const DIFFICULTY_MAP: Record<
   Facil: {
     xp: 10,
     stat: 1,
-    color: "text-emerald-400",
+    color: "text-emerald-300",
     border: "border-l-emerald-400",
     dropChance: 0.2,
     gold: 8,
@@ -103,24 +105,24 @@ const DIFFICULTY_MAP: Record<
   Medio: {
     xp: 20,
     stat: 2,
-    color: "text-amber-400",
-    border: "border-l-amber-400",
+    color: "text-cyan-300",
+    border: "border-l-cyan-400",
     dropChance: 0.35,
     gold: 14,
   },
   Dificil: {
     xp: 40,
     stat: 4,
-    color: "text-rose-400",
-    border: "border-l-rose-400",
+    color: "text-amber-300",
+    border: "border-l-amber-400",
     dropChance: 0.5,
     gold: 22,
   },
   Extremo: {
     xp: 80,
     stat: 7,
-    color: "text-purple-400",
-    border: "border-l-purple-400",
+    color: "text-fuchsia-300",
+    border: "border-l-fuchsia-400",
     dropChance: 0.75,
     gold: 34,
   },
@@ -128,9 +130,9 @@ const DIFFICULTY_MAP: Record<
 
 const RARITY_STYLE: Record<Rarity, { badge: string; glow: string; weight: number }> = {
   Comum: { badge: "bg-slate-700 text-slate-200", glow: "shadow-slate-700/20", weight: 62 },
-  Raro: { badge: "bg-sky-900 text-sky-300", glow: "shadow-sky-500/25", weight: 24 },
-  Epico: { badge: "bg-fuchsia-900 text-fuchsia-300", glow: "shadow-fuchsia-500/30", weight: 11 },
-  Lendario: { badge: "bg-amber-900 text-amber-300", glow: "shadow-amber-500/30", weight: 3 },
+  Raro: { badge: "bg-cyan-950 text-cyan-300", glow: "shadow-cyan-500/30", weight: 24 },
+  Epico: { badge: "bg-fuchsia-950 text-fuchsia-300", glow: "shadow-fuchsia-500/30", weight: 11 },
+  Lendario: { badge: "bg-amber-950 text-amber-300", glow: "shadow-amber-500/30", weight: 3 },
 };
 
 const LOOT_POOL: LootItem[] = [
@@ -234,6 +236,8 @@ const weightedLootRoll = (): LootItem => {
   return expanded[Math.floor(Math.random() * expanded.length)];
 };
 
+const statAbbr = (name: string) => name.slice(0, 3).toUpperCase();
+
 export default function SovereignApp() {
   const [isClient, setIsClient] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
@@ -336,13 +340,15 @@ export default function SovereignApp() {
     [inventory]
   );
 
+  const todayActivity = activityLog[getTodayStr()] || 0;
+
   const getRank = () => {
-    if (powerScore < 80) return { title: "RANK E", color: "text-slate-500" };
-    if (powerScore < 220) return { title: "RANK D", color: "text-emerald-500" };
-    if (powerScore < 500) return { title: "RANK C", color: "text-sky-500" };
-    if (powerScore < 900) return { title: "RANK B", color: "text-indigo-500" };
-    if (powerScore < 1600) return { title: "RANK A", color: "text-rose-500" };
-    return { title: "RANK S", color: "text-amber-300 drop-shadow-[0_0_12px_rgba(251,191,36,0.45)]" };
+    if (powerScore < 80) return { title: "RANK E", color: "text-slate-400" };
+    if (powerScore < 220) return { title: "RANK D", color: "text-emerald-300" };
+    if (powerScore < 500) return { title: "RANK C", color: "text-cyan-300" };
+    if (powerScore < 900) return { title: "RANK B", color: "text-indigo-300" };
+    if (powerScore < 1600) return { title: "RANK A", color: "text-fuchsia-300" };
+    return { title: "RANK S", color: "text-amber-300" };
   };
 
   const addToInventory = (loot: LootItem) => {
@@ -474,381 +480,366 @@ export default function SovereignApp() {
     setActiveRelicId((prev) => (prev === item.id ? null : item.id));
   };
 
+  const resetProgress = () => {
+    if (!window.confirm("Tem certeza que deseja resetar todo o progresso?")) return;
+
+    Object.values(STORAGE_KEYS).forEach((key) => localStorage.removeItem(key));
+
+    setXp(0);
+    setLevel(1);
+    setStats(BASE_STATS);
+    setActivityLog({});
+    setBossHp(20);
+    setBossDefeated(false);
+    setQuests([]);
+    setShowAddQuest(false);
+    setNewQuest({ title: "", difficulty: "Medio", statIndex: 0 });
+    setInventory([]);
+    setGold(60);
+    setActiveRelicId(null);
+    setLootResult(null);
+    setActiveTab("dashboard");
+  };
+
   if (!isClient) return null;
 
+  const rank = getRank();
+
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-950 to-slate-900 text-slate-50 px-4 py-6 lg:px-8">
+    <div className="cyber-bg min-h-screen text-slate-100 px-3 py-4 md:px-6 lg:px-10">
       <div className="mx-auto max-w-7xl">
-        <header className="mb-5 rounded-3xl border border-slate-800 bg-slate-900/80 p-5 backdrop-blur">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <h1 className={`text-3xl lg:text-4xl font-black tracking-tight ${getRank().color}`}>{getRank().title}</h1>
-              <p className="text-xs uppercase tracking-widest text-slate-500 mt-1">Nivel {level}</p>
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="rounded-xl border border-slate-800 bg-slate-950 px-4 py-2">
-                <span className="text-[10px] uppercase tracking-widest text-slate-500 block">Power</span>
-                <span className="text-xl font-black text-indigo-400">{powerScore}</span>
+        <p className="hud-topline">SISTEMA SOLO LEVELING</p>
+
+        <header className="hud-panel p-5 md:p-6">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="flex gap-4 items-start">
+              <div className="hud-avatar">
+                <Sparkles className="text-cyan-300" size={20} />
               </div>
-              <div className="rounded-xl border border-slate-800 bg-slate-950 px-4 py-2">
-                <span className="text-[10px] uppercase tracking-widest text-slate-500 block">Gold</span>
-                <span className="text-xl font-black text-amber-400 flex items-center gap-1">
-                  <Coins size={16} /> {gold}
-                </span>
+              <div>
+                <h1 className="text-3xl md:text-4xl font-black tracking-[0.08em] text-cyan-200">CACADOR</h1>
+                <p className="mt-1 text-xs uppercase tracking-[0.22em] text-fuchsia-300">{rank.title}</p>
+                <p className="mt-2 text-sm text-slate-400 italic">"Iniciado das sombras"</p>
+                <p className="mt-2 text-xs uppercase tracking-[0.2em] text-slate-300">Nivel {level}</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 min-w-56">
+              <div className="hud-chip">
+                <span>POWER</span>
+                <strong className="text-cyan-300">{powerScore}</strong>
+              </div>
+              <div className="hud-chip">
+                <span>GOLD</span>
+                <strong className="text-amber-300">{gold}</strong>
+              </div>
+              <div className="hud-chip">
+                <span>SEQUENCIA</span>
+                <strong className="text-orange-300">{todayActivity}d</strong>
+              </div>
+              <div className="hud-chip">
+                <span>MISSOES</span>
+                <strong className="text-emerald-300">{completedQuests.length}/{quests.length}</strong>
               </div>
             </div>
           </div>
 
-          <div className="mt-4">
-            <div className="flex justify-between text-[10px] uppercase tracking-widest text-slate-500 font-black">
+          <div className="mt-5">
+            <div className="flex justify-between text-xs uppercase tracking-[0.2em] text-slate-300">
               <span>XP</span>
-              <span>
-                {xp}/{xpToLevel}
-              </span>
+              <span>{xp} / {xpToLevel}</span>
             </div>
-            <div className="mt-1 h-2 overflow-hidden rounded-full border border-slate-800 bg-slate-950">
-              <div
-                className="h-full bg-sky-400 shadow-[0_0_10px_#38bdf8] transition-all"
-                style={{ width: `${xpPercent}%` }}
-              />
+            <div className="hud-progress mt-2">
+              <div className="hud-progress-fill" style={{ width: `${xpPercent}%` }} />
             </div>
           </div>
         </header>
 
-        <nav className="mb-6 flex flex-wrap gap-2 rounded-2xl border border-slate-800 bg-slate-900/80 p-2">
-          <button
-            onClick={() => setActiveTab("dashboard")}
-            className={`h-11 px-4 rounded-xl font-bold text-sm flex items-center gap-2 ${
-              activeTab === "dashboard" ? "bg-sky-500 text-white" : "text-slate-300 hover:bg-slate-800"
-            }`}
-          >
+        <nav className="mt-4 hud-tabs lg:hidden">
+          <button onClick={() => setActiveTab("dashboard")} className={`hud-tab ${activeTab === "dashboard" ? "hud-tab-active" : ""}`}>
             <LayoutDashboard size={16} /> Dashboard
           </button>
-          <button
-            onClick={() => setActiveTab("analytics")}
-            className={`h-11 px-4 rounded-xl font-bold text-sm flex items-center gap-2 ${
-              activeTab === "analytics" ? "bg-indigo-500 text-white" : "text-slate-300 hover:bg-slate-800"
-            }`}
-          >
+          <button onClick={() => setActiveTab("analytics")} className={`hud-tab ${activeTab === "analytics" ? "hud-tab-active" : ""}`}>
             <BarChart3 size={16} /> Analytics
           </button>
-          <button
-            onClick={() => setActiveTab("inventory")}
-            className={`h-11 px-4 rounded-xl font-bold text-sm flex items-center gap-2 ${
-              activeTab === "inventory" ? "bg-emerald-500 text-white" : "text-slate-300 hover:bg-slate-800"
-            }`}
-          >
+          <button onClick={() => setActiveTab("inventory")} className={`hud-tab ${activeTab === "inventory" ? "hud-tab-active" : ""}`}>
             <Backpack size={16} /> Inventario
+          </button>
+          <button onClick={() => setActiveTab("settings")} className={`hud-tab ${activeTab === "settings" ? "hud-tab-active" : ""}`}>
+            <Settings2 size={16} /> Config
           </button>
         </nav>
 
-        {activeTab === "dashboard" && (
-          <div className="grid gap-5 lg:grid-cols-[1.4fr_1fr]">
-            <section className="space-y-5">
-              <div className="rounded-2xl border border-purple-500/20 bg-slate-900/70 p-4">
-                <div className="mb-3 flex items-center justify-between">
-                  <h2 className="flex items-center gap-2 text-xs uppercase tracking-widest font-black text-purple-400">
-                    {bossDefeated ? <Trophy size={14} className="text-amber-400" /> : <Skull size={14} />}
-                    {bossDefeated ? "Boss derrotado" : "Chefe da semana"}
-                  </h2>
-                  <span className="text-[10px] text-slate-500 font-bold">HP {bossHp}/20</span>
-                </div>
-                {!bossDefeated ? (
-                  <div className="h-3 overflow-hidden rounded-full border border-slate-800 bg-slate-950">
-                    <div
-                      className="h-full bg-rose-500 transition-all shadow-[0_0_12px_#f43f5e]"
-                      style={{ width: `${(bossHp / 20) * 100}%` }}
-                    />
-                  </div>
-                ) : (
-                  <p className="text-[11px] text-amber-400 font-bold">Recompensas coletadas</p>
-                )}
+        <div className="mt-4 grid gap-4 lg:grid-cols-[250px_1fr]">
+          <aside className="hidden lg:block">
+            <div className="hud-panel p-3 sticky top-4">
+              <p className="text-[11px] uppercase tracking-[0.2em] text-slate-400 mb-3">Navegacao</p>
+              <div className="flex flex-col gap-2">
+                <button onClick={() => setActiveTab("dashboard")} className={`hud-tab w-full justify-start ${activeTab === "dashboard" ? "hud-tab-active" : ""}`}>
+                  <LayoutDashboard size={16} /> Dashboard
+                </button>
+                <button onClick={() => setActiveTab("analytics")} className={`hud-tab w-full justify-start ${activeTab === "analytics" ? "hud-tab-active" : ""}`}>
+                  <BarChart3 size={16} /> Analytics
+                </button>
+                <button onClick={() => setActiveTab("inventory")} className={`hud-tab w-full justify-start ${activeTab === "inventory" ? "hud-tab-active" : ""}`}>
+                  <Backpack size={16} /> Inventario
+                </button>
+                <button onClick={() => setActiveTab("settings")} className={`hud-tab w-full justify-start ${activeTab === "settings" ? "hud-tab-active" : ""}`}>
+                  <Settings2 size={16} /> Configuracoes
+                </button>
               </div>
 
-              <div className="rounded-3xl border border-slate-800 bg-slate-900/40 p-4">
-                <div className="h-72">
-                  <ResponsiveContainer>
-                    <RadarChart data={stats}>
-                      <PolarGrid stroke="#1e293b" />
-                      <PolarAngleAxis dataKey="subject" tick={{ fill: "#64748b", fontSize: 11, fontWeight: "bold" }} />
-                      <Radar dataKey="A" stroke="#38bdf8" fill="#38bdf8" fillOpacity={0.25} />
-                    </RadarChart>
-                  </ResponsiveContainer>
-                </div>
+              <div className="hud-subpanel p-3 mt-4 text-xs text-slate-400">
+                Dica: use a aba Configuracoes para resetar o progresso com seguranca.
               </div>
+            </div>
+          </aside>
 
-              <div className="space-y-3 rounded-3xl border border-slate-800 bg-slate-900/40 p-4">
-                <div className="flex justify-between items-center">
-                  <h3 className="flex items-center gap-2 text-xs uppercase tracking-widest font-black text-slate-400">
-                    <Target size={14} className="text-sky-500" /> Quests ativas
-                  </h3>
-                  <button
-                    onClick={() => setShowAddQuest((v) => !v)}
-                    className="rounded-xl border border-sky-500/20 bg-sky-900/30 p-2 text-sky-400"
-                  >
-                    {showAddQuest ? <X size={14} /> : <Plus size={14} />}
-                  </button>
-                </div>
-
-                {showAddQuest && (
-                  <div className="space-y-3 rounded-2xl border border-sky-500/20 bg-slate-900 p-4">
-                    <input
-                      value={newQuest.title}
-                      onChange={(e) => setNewQuest((p) => ({ ...p, title: e.target.value }))}
-                      placeholder="Nome da missao"
-                      className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-sm outline-none focus:border-sky-500"
-                    />
-                    <div className="grid grid-cols-2 gap-2">
-                      <select
-                        value={newQuest.difficulty}
-                        onChange={(e) =>
-                          setNewQuest((p) => ({ ...p, difficulty: normalizeDifficulty(e.target.value) }))
-                        }
-                        className="rounded-xl border border-slate-700 bg-slate-950 p-3 text-xs"
-                      >
-                        <option>Facil</option>
-                        <option>Medio</option>
-                        <option>Dificil</option>
-                        <option>Extremo</option>
-                      </select>
-                      <select
-                        value={newQuest.statIndex}
-                        onChange={(e) => setNewQuest((p) => ({ ...p, statIndex: Number(e.target.value) }))}
-                        className="rounded-xl border border-slate-700 bg-slate-950 p-3 text-xs"
-                      >
-                        {STAT_NAMES.map((n, i) => (
-                          <option key={n} value={i}>
-                            {n}
-                          </option>
-                        ))}
-                      </select>
+          <main>
+            {activeTab === "dashboard" && (
+              <div className="grid gap-4 lg:grid-cols-[1.8fr_1fr]">
+                <section className="hud-panel p-4 md:p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <h2 className="hud-title">MISSOES DIARIAS</h2>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-400">{completedQuests.length}/{quests.length}</span>
+                      <button onClick={() => setShowAddQuest((v) => !v)} className="hud-icon-btn">
+                        {showAddQuest ? <X size={14} /> : <Plus size={14} />}
+                      </button>
                     </div>
-                    <button
-                      onClick={handleAddQuest}
-                      className="w-full rounded-xl bg-sky-600 py-3 text-[11px] uppercase tracking-widest font-black"
-                    >
-                      Forjar
-                    </button>
                   </div>
-                )}
 
-                {activeQuests.length === 0 && (
-                  <div className="rounded-xl border border-dashed border-slate-700 p-4 text-sm text-slate-400 text-center">
-                    Sem quests ativas. Crie uma nova acima.
-                  </div>
-                )}
-
-                {activeQuests.map((q) => (
-                  <button
-                    key={q.id}
-                    onClick={() => completeQuest(q.id)}
-                    className={`w-full rounded-2xl border border-slate-800 border-l-4 ${DIFFICULTY_MAP[q.difficulty].border} bg-slate-900/70 p-4 text-left hover:bg-slate-800 transition`}
-                  >
-                    <div className="flex justify-between items-center gap-3">
-                      <div>
-                        <h4 className="font-bold">{q.title}</h4>
-                        <p className={`text-[10px] uppercase mt-1 font-bold ${DIFFICULTY_MAP[q.difficulty].color}`}>
-                          {q.difficulty} | +{q.xpGain} XP | +{q.statGain} {STAT_NAMES[q.statIndex]}
-                        </p>
+                  {showAddQuest && (
+                    <div className="hud-subpanel p-3 mb-3 space-y-2">
+                      <input
+                        value={newQuest.title}
+                        onChange={(e) => setNewQuest((p) => ({ ...p, title: e.target.value }))}
+                        placeholder="Nome da missao"
+                        className="hud-input"
+                      />
+                      <div className="grid grid-cols-2 gap-2">
+                        <select
+                          value={newQuest.difficulty}
+                          onChange={(e) => setNewQuest((p) => ({ ...p, difficulty: normalizeDifficulty(e.target.value) }))}
+                          className="hud-input"
+                        >
+                          <option>Facil</option>
+                          <option>Medio</option>
+                          <option>Dificil</option>
+                          <option>Extremo</option>
+                        </select>
+                        <select
+                          value={newQuest.statIndex}
+                          onChange={(e) => setNewQuest((p) => ({ ...p, statIndex: Number(e.target.value) }))}
+                          className="hud-input"
+                        >
+                          {STAT_NAMES.map((n, i) => (
+                            <option key={n} value={i}>{n}</option>
+                          ))}
+                        </select>
                       </div>
-                      <Shield size={16} className="text-slate-600" />
+                      <button onClick={handleAddQuest} className="hud-action-btn">FORJAR MISSAO</button>
                     </div>
-                  </button>
-                ))}
+                  )}
 
-                {completedQuests.length > 0 && (
-                  <div className="pt-2 border-t border-slate-800 space-y-2">
-                    {completedQuests.slice(0, 5).map((q) => (
-                      <div
+                  <div className="space-y-2 max-h-[540px] overflow-auto pr-1">
+                    {activeQuests.length === 0 && (
+                      <div className="hud-subpanel p-4 text-sm text-slate-400">Sem missoes ativas.</div>
+                    )}
+                    {activeQuests.map((q) => (
+                      <button
                         key={q.id}
-                        className="rounded-xl border border-slate-800/60 bg-slate-950 p-3 text-xs flex items-center justify-between text-slate-400"
+                        onClick={() => completeQuest(q.id)}
+                        className={`hud-quest ${DIFFICULTY_MAP[q.difficulty].border}`}
                       >
-                        <span className="line-through">{q.title}</span>
-                        <CheckCircle2 size={14} className="text-emerald-500" />
+                        <div className="h-8 w-8 rounded-full border border-slate-700/80" />
+                        <div className="flex-1 text-left">
+                          <h4 className="font-bold text-lg leading-none">{q.title}</h4>
+                          <p className={`mt-2 text-xs uppercase tracking-[0.2em] ${DIFFICULTY_MAP[q.difficulty].color}`}>
+                            {q.difficulty} +{q.xpGain} XP +{q.statGain} {STAT_NAMES[q.statIndex]}
+                          </p>
+                        </div>
+                        <Target size={16} className="text-cyan-400" />
+                      </button>
+                    ))}
+                  </div>
+                </section>
+
+                <aside className="space-y-4">
+                  <section className="hud-panel p-4">
+                    <h3 className="hud-title mb-3">MATRIZ DE ATRIBUTOS</h3>
+                    <div className="h-64">
+                      <ResponsiveContainer>
+                        <RadarChart data={stats}>
+                          <PolarGrid stroke="#1f2a4f" />
+                          <PolarAngleAxis dataKey="subject" tick={{ fill: "#7ec8ff", fontSize: 10 }} />
+                          <Radar dataKey="A" stroke="#00d9ff" fill="#00d9ff" fillOpacity={0.2} />
+                        </RadarChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="grid grid-cols-4 gap-2 mt-2 text-center">
+                      {stats.map((s) => (
+                        <div key={s.subject} className="hud-stat-mini">
+                          <span>{statAbbr(s.subject)}</span>
+                          <strong>{s.A}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+
+                  <section className="hud-panel p-4">
+                    <div className="flex items-center gap-2">
+                      {bossDefeated ? <Trophy size={14} className="text-amber-300" /> : <Skull size={14} className="text-rose-400" />}
+                      <h3 className="hud-title text-rose-300">BOSS SEMANAL</h3>
+                    </div>
+                    <p className="text-xs text-slate-400 mt-2">Complete 20 habitos esta semana</p>
+                    <div className="hud-progress mt-3">
+                      <div className="h-full bg-gradient-to-r from-rose-600 to-red-400" style={{ width: `${(bossHp / 20) * 100}%` }} />
+                    </div>
+                    <div className="flex justify-between mt-2 text-xs">
+                      <span className="text-slate-400">{20 - bossHp}/20</span>
+                      <span className="text-rose-300">{bossDefeated ? "DERROTADO" : `${bossHp} RESTANTES`}</span>
+                    </div>
+                  </section>
+
+                  <section className="hud-panel p-4">
+                    <h3 className="hud-title mb-3">LOOT LAB</h3>
+                    <button onClick={openSupplyCrate} disabled={gold < 25} className="hud-action-btn disabled:opacity-40">
+                      <PackageOpen size={14} /> ABRIR CAIXA (25 GOLD)
+                    </button>
+                    <p className="text-xs text-slate-400 mt-2">Drops aleatorios por raridade.</p>
+                  </section>
+                </aside>
+              </div>
+            )}
+
+            {activeTab === "analytics" && (
+              <div className="grid gap-4 lg:grid-cols-2">
+                <section className="hud-panel p-5">
+                  <h3 className="hud-title mb-3"><TrendingUp size={14} /> ATIVIDADE (7 DIAS)</h3>
+                  <div className="h-72">
+                    <ResponsiveContainer>
+                      <AreaChart data={activitySeries}>
+                        <CartesianGrid stroke="#1f2a4f" vertical={false} strokeDasharray="4 4" />
+                        <XAxis dataKey="day" stroke="#6ea7d8" fontSize={11} tickLine={false} axisLine={false} />
+                        <YAxis domain={[0, 6]} allowDecimals={false} stroke="#6ea7d8" fontSize={11} tickLine={false} axisLine={false} />
+                        <Tooltip
+                          contentStyle={{
+                            background: "#050b1f",
+                            border: "1px solid #1f2a4f",
+                            borderRadius: "10px",
+                            color: "#cdeaff",
+                          }}
+                        />
+                        <Area dataKey="count" type="monotone" stroke="#00d9ff" fill="#00d9ff" fillOpacity={0.2} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </section>
+
+                <section className="hud-panel p-5">
+                  <h3 className="hud-title mb-3"><Activity size={14} /> ESTATISTICAS DE COMBATE</h3>
+                  <div className="h-72">
+                    <ResponsiveContainer>
+                      <BarChart data={stats}>
+                        <CartesianGrid stroke="#1f2a4f" vertical={false} strokeDasharray="4 4" />
+                        <XAxis dataKey="subject" stroke="#6ea7d8" fontSize={10} tickLine={false} axisLine={false} />
+                        <Bar dataKey="A" fill="#00d9ff" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </section>
+              </div>
+            )}
+
+            {activeTab === "inventory" && (
+              <section className="hud-panel p-5">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                  <h3 className="hud-title"><Backpack size={14} /> INVENTARIO</h3>
+                  <span className="text-xs text-slate-400 uppercase tracking-[0.2em]">
+                    Total {inventory.reduce((acc, item) => acc + item.qty, 0)} itens
+                  </span>
+                </div>
+
+                {inventoryByRarity.length === 0 ? (
+                  <div className="hud-subpanel p-8 text-center text-slate-400">Inventario vazio.</div>
+                ) : (
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                    {inventoryByRarity.map((item) => (
+                      <div key={item.id} className={`hud-subpanel p-4 ${RARITY_STYLE[item.rarity].glow}`}>
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="font-bold text-lg leading-none">{item.name}</p>
+                            <p className="mt-2 text-xs text-slate-400">{item.description}</p>
+                          </div>
+                          <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${RARITY_STYLE[item.rarity].badge}`}>
+                            {item.rarity}
+                          </span>
+                        </div>
+
+                        <div className="mt-4 flex items-center justify-between">
+                          <span className="text-xs text-slate-400">Qtd: {item.qty}</span>
+                          <div className="flex items-center gap-2">
+                            {item.type === "consumivel" && (
+                              <button onClick={() => useItem(item)} className="hud-mini-btn">Usar</button>
+                            )}
+                            {item.type === "reliquia" && (
+                              <button
+                                onClick={() => equipRelic(item)}
+                                className={`hud-mini-btn ${activeRelicId === item.id ? "!bg-emerald-600" : "!bg-fuchsia-700"}`}
+                              >
+                                {activeRelicId === item.id ? "Ativa" : "Equipar"}
+                              </button>
+                            )}
+                            {item.type === "material" && (
+                              <span className="text-xs text-amber-300 flex items-center gap-1">
+                                <Gem size={13} /> Material
+                              </span>
+                            )}
+                          </div>
+                        </div>
                       </div>
                     ))}
                   </div>
                 )}
-              </div>
-            </section>
-
-            <aside className="space-y-5">
-              <div className="rounded-3xl border border-slate-800 bg-slate-900/50 p-4">
-                <h3 className="text-xs uppercase tracking-widest font-black text-slate-500 mb-4 flex items-center gap-2">
-                  <PackageOpen size={14} className="text-amber-400" /> Loot Lab
-                </h3>
-                <button
-                  onClick={openSupplyCrate}
-                  disabled={gold < 25}
-                  className={`w-full rounded-xl py-3 text-sm font-black uppercase tracking-wider transition ${
-                    gold >= 25
-                      ? "bg-amber-500 text-black hover:bg-amber-400"
-                      : "bg-slate-800 text-slate-500 cursor-not-allowed"
-                  }`}
-                >
-                  Abrir Caixa (25 gold)
-                </button>
-                <p className="mt-3 text-xs text-slate-400">
-                  Quests tambem podem dropar itens. Dificuldades maiores aumentam chance.
-                </p>
-              </div>
-
-              <div className="rounded-3xl border border-slate-800 bg-slate-900/50 p-4">
-                <h3 className="text-xs uppercase tracking-widest font-black text-slate-500 mb-3">
-                  Reliquia equipada
-                </h3>
-                {activeRelicId ? (
-                  <div className="rounded-xl border border-emerald-500/30 bg-emerald-900/10 p-3">
-                    <p className="font-bold text-emerald-300">
-                      {inventory.find((i) => i.id === activeRelicId)?.name}
-                    </p>
-                    <p className="text-xs text-slate-400 mt-1">Bonus ativo: +{relicBonus} power</p>
-                  </div>
-                ) : (
-                  <p className="text-sm text-slate-400">Nenhuma reliquia ativa.</p>
-                )}
-              </div>
-
-              <div className="rounded-3xl border border-slate-800 bg-slate-900/50 p-4">
-                <h3 className="text-xs uppercase tracking-widest font-black text-slate-500 mb-3">Resumo rapido</h3>
-                <div className="grid grid-cols-2 gap-2 text-sm">
-                  <div className="rounded-lg bg-slate-950 p-3">
-                    <p className="text-slate-500 text-[10px] uppercase">Itens</p>
-                    <p className="font-black">{inventory.reduce((a, b) => a + b.qty, 0)}</p>
-                  </div>
-                  <div className="rounded-lg bg-slate-950 p-3">
-                    <p className="text-slate-500 text-[10px] uppercase">Quests</p>
-                    <p className="font-black">{activeQuests.length}</p>
-                  </div>
-                </div>
-              </div>
-            </aside>
-          </div>
-        )}
-
-        {activeTab === "analytics" && (
-          <div className="grid gap-5 lg:grid-cols-2">
-            <section className="rounded-3xl border border-slate-800 bg-slate-900/50 p-5">
-              <h3 className="mb-4 text-xs font-black uppercase tracking-widest text-slate-500 flex items-center gap-2">
-                <TrendingUp size={14} className="text-emerald-400" /> Atividade (7 dias)
-              </h3>
-              <div className="h-64">
-                <ResponsiveContainer>
-                  <AreaChart data={activitySeries}>
-                    <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" vertical={false} />
-                    <XAxis dataKey="day" stroke="#475569" fontSize={11} tickLine={false} axisLine={false} />
-                    <YAxis allowDecimals={false} domain={[0, 6]} stroke="#475569" fontSize={11} tickLine={false} axisLine={false} />
-                    <Tooltip
-                      contentStyle={{
-                        background: "#0f172a",
-                        border: "1px solid #1e293b",
-                        borderRadius: "12px",
-                      }}
-                    />
-                    <Area type="monotone" dataKey="count" stroke="#34d399" fill="#34d399" fillOpacity={0.2} />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            </section>
-
-            <section className="rounded-3xl border border-slate-800 bg-slate-900/50 p-5">
-              <h3 className="mb-4 text-xs font-black uppercase tracking-widest text-slate-500 flex items-center gap-2">
-                <Activity size={14} className="text-sky-400" /> Estatisticas de combate
-              </h3>
-              <div className="h-64">
-                <ResponsiveContainer>
-                  <BarChart data={stats}>
-                    <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" vertical={false} />
-                    <XAxis dataKey="subject" stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
-                    <Bar dataKey="A" fill="#38bdf8" radius={[5, 5, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </section>
-          </div>
-        )}
-
-        {activeTab === "inventory" && (
-          <section className="rounded-3xl border border-slate-800 bg-slate-900/40 p-5">
-            <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-xs uppercase tracking-widest font-black text-slate-500 flex items-center gap-2">
-                <Backpack size={14} className="text-emerald-400" /> Inventario
-              </h3>
-              <span className="text-xs text-slate-400">
-                Total: {inventory.reduce((acc, item) => acc + item.qty, 0)} itens
-              </span>
-            </div>
-
-            {inventoryByRarity.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-slate-700 p-8 text-center text-slate-400">
-                Inventario vazio. Complete quests ou abra caixas.
-              </div>
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                {inventoryByRarity.map((item) => (
-                  <div
-                    key={item.id}
-                    className={`rounded-2xl border border-slate-800 bg-slate-900 p-4 shadow-lg ${RARITY_STYLE[item.rarity].glow}`}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <p className="font-bold">{item.name}</p>
-                        <p className="text-xs text-slate-400 mt-1">{item.description}</p>
-                      </div>
-                      <span className={`px-2 py-1 rounded-md text-[10px] font-black ${RARITY_STYLE[item.rarity].badge}`}>
-                        {item.rarity}
-                      </span>
-                    </div>
-
-                    <div className="mt-4 flex items-center justify-between">
-                      <span className="text-xs text-slate-400">Qtd: {item.qty}</span>
-                      <div className="flex items-center gap-2">
-                        {item.type === "consumivel" && (
-                          <button
-                            onClick={() => useItem(item)}
-                            className="rounded-lg bg-sky-600 px-3 py-1.5 text-[11px] font-black uppercase"
-                          >
-                            Usar
-                          </button>
-                        )}
-                        {item.type === "reliquia" && (
-                          <button
-                            onClick={() => equipRelic(item)}
-                            className={`rounded-lg px-3 py-1.5 text-[11px] font-black uppercase ${
-                              activeRelicId === item.id
-                                ? "bg-emerald-600 text-white"
-                                : "bg-fuchsia-700 text-white"
-                            }`}
-                          >
-                            {activeRelicId === item.id ? "Ativa" : "Equipar"}
-                          </button>
-                        )}
-                        {item.type === "material" && (
-                          <span className="text-xs text-amber-300 flex items-center gap-1">
-                            <Gem size={13} /> Material
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              </section>
             )}
-          </section>
-        )}
+
+            {activeTab === "settings" && (
+              <section className="hud-panel p-5 max-w-3xl">
+                <h3 className="hud-title mb-4"><Settings2 size={14} /> CONFIGURACOES</h3>
+
+                <div className="hud-subpanel p-4 space-y-4">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-200">Resetar progresso</p>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Remove XP, nivel, missoes, inventario, boss semanal e dados salvos no navegador.
+                    </p>
+                  </div>
+
+                  <button
+                    onClick={resetProgress}
+                    className="hud-action-btn !border-rose-500/60 !text-rose-200 !bg-rose-900/40 hover:!border-rose-400"
+                  >
+                    <X size={14} /> RESETAR PROGRESSO
+                  </button>
+
+                  <p className="text-[11px] text-rose-300/90 uppercase tracking-[0.12em]">Acao irreversivel</p>
+                </div>
+              </section>
+            )}
+          </main>
+        </div>
       </div>
 
       {lootResult && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-sm rounded-3xl border-2 border-amber-500/40 bg-slate-900 p-8 text-center">
-            <Sparkles size={56} className="mx-auto text-amber-400 mb-4" />
-            <h2 className="text-2xl font-black text-amber-300 uppercase tracking-tight">Loot obtido</h2>
+          <div className="hud-panel w-full max-w-sm p-7 text-center">
+            <Sparkles size={56} className="mx-auto text-amber-300 mb-4" />
+            <h2 className="text-2xl font-black tracking-[0.1em] text-cyan-200">LOOT OBTIDO</h2>
             <p className="mt-2 text-slate-200 font-bold">{lootResult}</p>
-            <button
-              onClick={() => setLootResult(null)}
-              className="mt-6 w-full rounded-full bg-amber-500 px-6 py-3 text-black text-xs font-black uppercase tracking-[0.2em]"
-            >
-              Coletar
+            <button onClick={() => setLootResult(null)} className="hud-action-btn mt-5">
+              COLETAR
             </button>
           </div>
         </div>
@@ -856,3 +847,9 @@ export default function SovereignApp() {
     </div>
   );
 }
+
+
+
+
+
+
