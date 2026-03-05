@@ -156,7 +156,7 @@ const TITLE_POOL: TitleItem[] = [
   { id: "crown_of_merit", name: "Coroa do Merito", rarity: "Raro", description: "Reconhecimento pelo crescimento constante.", xpRequired: 1700 },
   { id: "mind_emperor", name: "Imperador da Mente", rarity: "Epico", description: "Controle total sobre estrategia e inteligencia.", xpRequired: 2800 },
   { id: "sovereign_archon", name: "Soberano Arcano", rarity: "Lendario", description: "Lenda viva entre os cacadores.", xpRequired: 4500 },
-  { id: "void_reaper", name: "Ceifador do Vazio", rarity: "Lendario", description: "Titulo raro obtido por drop em missao.", xpRequired: 0, questDropOnly: true },
+  { id: "void_reaper", name: "Aura +99999", rarity: "Lendario", description: "Titulo raro obtido por drop em missao.", xpRequired: 0, questDropOnly: true },
   { id: "oracle_of_stars", name: "Oraculo Estelar", rarity: "Epico", description: "Titulo secreto obtido por chance em missao.", xpRequired: 0, questDropOnly: true },
 ];
 
