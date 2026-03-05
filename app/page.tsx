@@ -21,6 +21,8 @@ import {
   Activity,
   Award,
   BarChart3,
+  Bell,
+  BellOff,
   CheckCircle2,
   LayoutDashboard,
   Plus,
@@ -78,11 +80,30 @@ type SocialPost = {
   level_snapshot: number;
   power_snapshot: number;
 };
+type PostSnapshotPayload = {
+  v: 1;
+  rank: string;
+  title: string;
+  stats: number[];
+};
 type Friendship = {
   id: string;
   requester_id: string;
   addressee_id: string;
   status: FriendshipStatus;
+};
+
+type SocialEntry = {
+  id: string;
+  name: string;
+  username: string;
+  level: number;
+  power: number;
+  createdAt: string;
+  avatarUrl: string | null;
+  rank: string;
+  title: string;
+  stats: number[];
 };
 
 const STORAGE_KEYS = {
@@ -99,10 +120,10 @@ const STORAGE_KEYS = {
 };
 
 const BASE_STATS: Stat[] = [
-  { subject: "Forca", A: 10 },
-  { subject: "Inteligencia", A: 10 },
-  { subject: "Riqueza", A: 10 },
-  { subject: "Foco", A: 10 },
+  { subject: "Forca", A: 0 },
+  { subject: "Inteligencia", A: 0 },
+  { subject: "Riqueza", A: 0 },
+  { subject: "Foco", A: 0 },
 ];
 
 const STAT_NAMES = BASE_STATS.map((s) => s.subject);
@@ -165,6 +186,25 @@ const getLastDays = (days: number) => {
 };
 const xpToNextLevel = (lv: number) => Math.floor(100 + Math.pow(lv, 1.4) * 35);
 const statAbbr = (name: string) => name.slice(0, 3).toUpperCase();
+const calcPowerScore = (nextStats: Stat[], nextLevel: number, nextTotalXp: number) =>
+  Math.floor(nextStats.reduce((acc, curr) => acc + curr.A, 0) + (nextLevel - 1) * 12 + nextTotalXp / 40);
+const toVapidUint8Array = (base64String: string) => {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i += 1) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+};
+const parseSnapshotPayload = (content: string): PostSnapshotPayload | null => {
+  try {
+    const parsed = JSON.parse(content) as PostSnapshotPayload;
+    if (parsed && parsed.v === 1 && Array.isArray(parsed.stats) && parsed.stats.length === 4) return parsed;
+    return null;
+  } catch {
+    return null;
+  }
+};
 
 export default function SovereignApp() {
   const [isClient, setIsClient] = useState(false);
@@ -205,8 +245,12 @@ export default function SovereignApp() {
   const [friendInput, setFriendInput] = useState("");
   const [socialFeedback, setSocialFeedback] = useState<string | null>(null);
   const [socialLoading, setSocialLoading] = useState(false);
+  const [selectedFriendProfile, setSelectedFriendProfile] = useState<SocialEntry | null>(null);
 
-  const powerScore = Math.floor(stats.reduce((acc, curr) => acc + curr.A, 0) * (level / 4.5));
+  const [pushStatus, setPushStatus] = useState<string | null>(null);
+  const [pushEnabled, setPushEnabled] = useState(false);
+
+  const powerScore = calcPowerScore(stats, level, totalXp);
   const xpToLevel = xpToNextLevel(level);
   const xpPercent = clamp((xp / xpToLevel) * 100, 0, 100);
   const activeQuests = useMemo(() => quests.filter((q) => !q.completed), [quests]);
@@ -243,9 +287,7 @@ export default function SovereignApp() {
   }, [acceptedFriendships, profilesById, currentUserId]);
 
   const socialStatusBoard = useMemo(() => {
-    if (!currentUserId) {
-      return [] as Array<{ id: string; name: string; username: string; level: number; power: number; createdAt: string; avatarUrl: string | null }>;
-    }
+    if (!currentUserId) return [] as SocialEntry[];
 
     const allowedIds = new Set<string>([currentUserId, ...myFriends.map((f) => f.profile.id)]);
     const latestByAuthor = new Map<string, SocialPost>();
@@ -253,14 +295,13 @@ export default function SovereignApp() {
     for (const post of socialPosts) {
       if (!allowedIds.has(post.author_id)) continue;
       const prev = latestByAuthor.get(post.author_id);
-      if (!prev || new Date(post.created_at).getTime() > new Date(prev.created_at).getTime()) {
-        latestByAuthor.set(post.author_id, post);
-      }
+      if (!prev || new Date(post.created_at).getTime() > new Date(prev.created_at).getTime()) latestByAuthor.set(post.author_id, post);
     }
 
     return [...latestByAuthor.values()]
       .map((post) => {
         const profile = profilesById[post.author_id];
+        const parsed = parseSnapshotPayload(post.content);
         return {
           id: post.author_id,
           name: profile?.hunter_name || post.hunter_name_snapshot,
@@ -269,6 +310,9 @@ export default function SovereignApp() {
           power: post.power_snapshot,
           createdAt: post.created_at,
           avatarUrl: profile?.avatar_url || post.avatar_url_snapshot || null,
+          rank: parsed?.rank || getRank(post.power_snapshot),
+          title: parsed?.title || "Sem titulo",
+          stats: parsed?.stats || [0, 0, 0, 0],
         };
       })
       .sort((a, b) => b.power - a.power || b.level - a.level);
@@ -299,13 +343,7 @@ export default function SovereignApp() {
 
   const getPublicProfile = async (userId: string, metadata?: Record<string, unknown>): Promise<Profile> => {
     if (!supabase) throw new Error("Supabase nao configurado.");
-
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("id, username, hunter_name, avatar_url")
-      .eq("id", userId)
-      .maybeSingle();
-
+    const { data, error } = await supabase.from("profiles").select("*").eq("id", userId).maybeSingle();
     if (error) throw error;
     if (data) return data as Profile;
 
@@ -366,7 +404,7 @@ export default function SovereignApp() {
     const ids = [...profileIds];
     let map: Record<string, Profile> = {};
     if (ids.length > 0) {
-      const { data: profileRows } = await supabase.from("profiles").select("id, username, hunter_name, avatar_url").in("id", ids);
+      const { data: profileRows } = await supabase.from("profiles").select("*").in("id", ids);
       map = (profileRows || []).reduce<Record<string, Profile>>((acc, row) => {
         const p = row as Profile;
         acc[p.id] = p;
@@ -394,14 +432,26 @@ export default function SovereignApp() {
     setSocialLoading(false);
   };
 
-  const publishStatusSnapshot = async (levelSnapshot: number, powerSnapshot: number) => {
+  const publishStatusSnapshot = async (
+    levelSnapshot: number,
+    powerSnapshot: number,
+    statsSnapshot: Stat[],
+    titleSnapshot: string
+  ) => {
     if (!supabase || !currentUserId) return;
+
+    const compactPayload: PostSnapshotPayload = {
+      v: 1,
+      rank: getRank(powerSnapshot),
+      title: titleSnapshot,
+      stats: statsSnapshot.map((s) => s.A),
+    };
 
     await supabase.from("posts").insert({
       author_id: currentUserId,
       hunter_name_snapshot: hunterName,
       avatar_url_snapshot: avatarDataUrl,
-      content: `STATUS ${getRank(powerSnapshot)} | LV ${levelSnapshot} | PWR ${powerSnapshot}`,
+      content: JSON.stringify(compactPayload),
       level_snapshot: levelSnapshot,
       power_snapshot: powerSnapshot,
     });
@@ -431,7 +481,6 @@ export default function SovereignApp() {
       const statIndexes = Array.isArray(q.statIndexes) && q.statIndexes.length > 0
         ? q.statIndexes.map((idx) => clamp(Number(idx) || 0, 0, STAT_NAMES.length - 1))
         : fallbackIndexes;
-
       return {
         id: String(q.id),
         title: String(q.title || "Missao"),
@@ -464,9 +513,8 @@ export default function SovereignApp() {
 
     const { data: authListener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession);
-      if (nextSession?.user) {
-        void loadProfile(nextSession.user);
-      } else {
+      if (nextSession?.user) void loadProfile(nextSession.user);
+      else {
         setCurrentUserId(null);
         setCurrentUser(null);
       }
@@ -494,6 +542,12 @@ export default function SovereignApp() {
     void loadSocialData(currentUserId);
   }, [currentUserId]);
 
+  useEffect(() => {
+    const supported = typeof window !== "undefined" && "Notification" in window && "serviceWorker" in navigator && "PushManager" in window;
+    if (!supported) return;
+    setPushEnabled(Notification.permission === "granted");
+  }, []);
+
   const handleAuth = async () => {
     if (!supabase || !isSupabaseConfigured) {
       setAuthError("Configure Supabase para continuar.");
@@ -508,7 +562,6 @@ export default function SovereignApp() {
       setAuthError("Use email valido e senha com ao menos 6 caracteres.");
       return;
     }
-
     setAuthError(null);
 
     if (authMode === "register") {
@@ -589,7 +642,6 @@ export default function SovereignApp() {
   const onAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     const reader = new FileReader();
     reader.onload = () => {
       const result = typeof reader.result === "string" ? reader.result : null;
@@ -598,16 +650,59 @@ export default function SovereignApp() {
     reader.readAsDataURL(file);
   };
 
+  const enablePushNotifications = async () => {
+    if (!currentUserId) {
+      setPushStatus("Faca login para ativar notificacoes.");
+      return;
+    }
+
+    const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+    if (!vapidKey) {
+      setPushStatus("Falta NEXT_PUBLIC_VAPID_PUBLIC_KEY.");
+      return;
+    }
+
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        setPushStatus("Permissao negada.");
+        return;
+      }
+
+      const registration = await navigator.serviceWorker.register("/sw.js");
+      const existing = await registration.pushManager.getSubscription();
+      const subscription = existing || (await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: toVapidUint8Array(vapidKey),
+      }));
+
+      const response = await fetch("/api/push/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: currentUserId, subscription }),
+      });
+
+      if (!response.ok) {
+        setPushStatus("Falha ao salvar inscricao push.");
+        return;
+      }
+
+      setPushEnabled(true);
+      setPushStatus("Notificacoes ativadas.");
+    } catch {
+      setPushStatus("Erro ao ativar push.");
+    }
+  };
+
   const addFriend = async () => {
     if (!supabase || !currentUserId) return;
-
     const username = friendInput.trim().toLowerCase();
     if (!username) {
       setSocialFeedback("Digite um usuario para adicionar.");
       return;
     }
 
-    const { data: target, error: targetError } = await supabase.from("profiles").select("id, username, hunter_name, avatar_url").eq("username", username).maybeSingle();
+    const { data: target, error: targetError } = await supabase.from("profiles").select("*").eq("username", username).maybeSingle();
     if (targetError || !target) {
       setSocialFeedback("Usuario nao encontrado.");
       return;
@@ -660,7 +755,6 @@ export default function SovereignApp() {
 
   const handleAddQuest = () => {
     if (!newQuest.title.trim()) return;
-
     const diff = DIFFICULTY_MAP[newQuest.difficulty];
     const questCategory = QUEST_CATEGORY_MAP[newQuest.category];
 
@@ -728,7 +822,7 @@ export default function SovereignApp() {
     }
 
     const nextTotalXp = totalXp + gainedXp;
-    const nextPower = Math.floor(nextStats.reduce((acc, curr) => acc + curr.A, 0) * (nextLevel / 4.5));
+    const nextPower = calcPowerScore(nextStats, nextLevel, nextTotalXp);
 
     setXp(Math.max(0, nextXp));
     setTotalXp(nextTotalXp);
@@ -741,12 +835,11 @@ export default function SovereignApp() {
 
     checkXpTitles(nextTotalXp);
     tryQuestTitleDrop();
-    void publishStatusSnapshot(nextLevel, nextPower);
+    void publishStatusSnapshot(nextLevel, nextPower, nextStats, equippedTitle?.name || "Sem titulo");
   };
 
   const resetProgress = () => {
     if (!window.confirm("Tem certeza que deseja resetar todo o progresso?")) return;
-
     Object.values(STORAGE_KEYS).forEach((key) => localStorage.removeItem(key));
 
     setXp(0);
@@ -811,23 +904,22 @@ export default function SovereignApp() {
         <p className="hud-topline">SISTEMA SOLO LEVELING</p>
 
         <header className="hud-panel p-5 md:p-6">
-          <div className="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
+          <div className="grid gap-4 xl:grid-cols-[0.7fr_1.2fr_1fr]">
+            <div className="hud-subpanel p-4 flex items-center gap-3">
+              <div className="h-14 w-14 rounded-xl overflow-hidden border border-cyan-500/40 bg-slate-950/70">
+                {avatarDataUrl ? <img src={avatarDataUrl} alt="avatar" className="h-full w-full object-cover" /> : <div className="h-full w-full grid place-items-center text-cyan-300">?</div>}
+              </div>
+              <div>
+                <p className="text-xs text-slate-400 uppercase tracking-[0.12em]">Cacador</p>
+                <p className="text-lg font-black text-cyan-100 leading-tight">{hunterName}</p>
+                <p className="text-xs text-slate-500">@{currentUser}</p>
+              </div>
+            </div>
+
             <div className="hud-subpanel p-4">
               <h2 className="hud-title mb-2">MATRIZ DE PONTOS</h2>
-              <div className="h-44">
-                <ResponsiveContainer>
-                  <RadarChart data={stats}>
-                    <PolarGrid stroke="#1f2a4f" />
-                    <PolarAngleAxis dataKey="subject" tick={{ fill: "#7ec8ff", fontSize: 10 }} />
-                    <Radar dataKey="A" stroke="#00d9ff" fill="#00d9ff" fillOpacity={0.2} />
-                  </RadarChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="grid grid-cols-4 gap-2 mt-2 text-center">
-                {stats.map((s) => (
-                  <div key={s.subject} className="hud-stat-mini"><span>{statAbbr(s.subject)}</span><strong>{s.A}</strong></div>
-                ))}
-              </div>
+              <div className="h-40"><ResponsiveContainer><RadarChart data={stats}><PolarGrid stroke="#1f2a4f" /><PolarAngleAxis dataKey="subject" tick={{ fill: "#7ec8ff", fontSize: 10 }} /><Radar dataKey="A" stroke="#00d9ff" fill="#00d9ff" fillOpacity={0.2} /></RadarChart></ResponsiveContainer></div>
+              <div className="grid grid-cols-4 gap-2 mt-2 text-center">{stats.map((s) => <div key={s.subject} className="hud-stat-mini"><span>{statAbbr(s.subject)}</span><strong>{s.A}</strong></div>)}</div>
             </div>
 
             <div className="grid grid-cols-2 gap-2 min-w-56">
@@ -859,21 +951,13 @@ export default function SovereignApp() {
             {activeTab === "dashboard" && (
               <div className="grid gap-4 xl:grid-cols-[1.55fr_1fr]">
                 <section className="hud-panel p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <h3 className="hud-title"><Target size={14} /> MISSOES DIARIAS</h3>
-                    <button onClick={() => setShowAddQuest((v) => !v)} className="hud-icon-btn"><Plus size={14} /></button>
-                  </div>
-
+                  <div className="flex items-center justify-between mb-3"><h3 className="hud-title"><Target size={14} /> MISSOES DIARIAS</h3><button onClick={() => setShowAddQuest((v) => !v)} className="hud-icon-btn"><Plus size={14} /></button></div>
                   {showAddQuest && (
                     <div className="hud-subpanel p-4 mb-3 space-y-3">
                       <input value={newQuest.title} onChange={(e) => setNewQuest((p) => ({ ...p, title: e.target.value }))} placeholder="Nome da missao" className="hud-input" />
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        <select value={newQuest.difficulty} onChange={(e) => setNewQuest((p) => ({ ...p, difficulty: e.target.value as Difficulty }))} className="hud-input">
-                          <option>Facil</option><option>Medio</option><option>Dificil</option><option>Extremo</option>
-                        </select>
-                        <select value={newQuest.category} onChange={(e) => setNewQuest((p) => ({ ...p, category: e.target.value as QuestCategory }))} className="hud-input">
-                          {Object.keys(QUEST_CATEGORY_MAP).map((cat) => <option key={cat} value={cat}>{cat}</option>)}
-                        </select>
+                        <select value={newQuest.difficulty} onChange={(e) => setNewQuest((p) => ({ ...p, difficulty: e.target.value as Difficulty }))} className="hud-input"><option>Facil</option><option>Medio</option><option>Dificil</option><option>Extremo</option></select>
+                        <select value={newQuest.category} onChange={(e) => setNewQuest((p) => ({ ...p, category: e.target.value as QuestCategory }))} className="hud-input">{Object.keys(QUEST_CATEGORY_MAP).map((cat) => <option key={cat} value={cat}>{cat}</option>)}</select>
                       </div>
                       <button onClick={handleAddQuest} className="hud-action-btn">FORJAR MISSAO</button>
                     </div>
@@ -886,102 +970,39 @@ export default function SovereignApp() {
                         <div className="h-8 w-8 rounded-full border border-slate-700/80" />
                         <div className="flex-1 text-left">
                           <h4 className="font-bold text-lg leading-none">{q.title}</h4>
-                          <p className={`mt-2 text-xs uppercase tracking-[0.2em] ${DIFFICULTY_MAP[q.difficulty].color}`}>
-                            {q.difficulty} +{q.xpGain} XP | {q.category} | {STAT_NAMES[q.statIndexes[0]]} + {STAT_NAMES[q.statIndexes[1]] || STAT_NAMES[q.statIndexes[0]]}
-                          </p>
+                          <p className={`mt-2 text-xs uppercase tracking-[0.2em] ${DIFFICULTY_MAP[q.difficulty].color}`}>{q.difficulty} +{q.xpGain} XP | {q.category} | {STAT_NAMES[q.statIndexes[0]]} + {STAT_NAMES[q.statIndexes[1]] || STAT_NAMES[q.statIndexes[0]]}</p>
                         </div>
                         <Target size={16} className="text-cyan-400" />
                       </button>
                     ))}
-
-                    {completedQuests.length > 0 && (
-                      <div className="pt-3 border-t border-slate-800/70 space-y-2">
-                        {completedQuests.slice(0, 6).map((q) => (
-                          <div key={q.id} className="hud-subpanel p-3 flex items-center justify-between opacity-70">
-                            <p className="text-sm line-through text-slate-400">{q.title}</p>
-                            <CheckCircle2 size={14} className="text-emerald-400" />
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                    {completedQuests.length > 0 && <div className="pt-3 border-t border-slate-800/70 space-y-2">{completedQuests.slice(0, 6).map((q) => <div key={q.id} className="hud-subpanel p-3 flex items-center justify-between opacity-70"><p className="text-sm line-through text-slate-400">{q.title}</p><CheckCircle2 size={14} className="text-emerald-400" /></div>)}</div>}
                   </div>
                 </section>
 
                 <aside className="space-y-4">
                   <section className="hud-panel p-4">
-                    <div className="flex items-center gap-2">
-                      {bossDefeated ? <Trophy size={14} className="text-amber-300" /> : <Skull size={14} className="text-rose-400" />}
-                      <h3 className="hud-title text-rose-300">BOSS SEMANAL</h3>
-                    </div>
+                    <div className="flex items-center gap-2">{bossDefeated ? <Trophy size={14} className="text-amber-300" /> : <Skull size={14} className="text-rose-400" />}<h3 className="hud-title text-rose-300">BOSS SEMANAL</h3></div>
                     <p className="text-xs text-slate-400 mt-2">Complete 20 habitos esta semana</p>
                     <div className="hud-progress mt-3"><div className="h-full bg-gradient-to-r from-rose-600 to-red-400" style={{ width: `${(bossHp / 20) * 100}%` }} /></div>
                     <div className="flex justify-between mt-2 text-xs"><span className="text-slate-400">{20 - bossHp}/20</span><span className="text-rose-300">{bossDefeated ? "DERROTADO" : `${bossHp} RESTANTES`}</span></div>
                   </section>
 
-                  <section className="hud-panel p-4">
-                    <h3 className="hud-title mb-3">TITULO ATIVO</h3>
-                    <p className="text-sm font-bold text-cyan-100">{equippedTitle?.name || "Sem titulo"}</p>
-                    <p className="text-xs text-slate-400 mt-2">{equippedTitle?.description || "Conquiste titulos por XP e missao."}</p>
-                  </section>
-
-                  <section className="hud-panel p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="hud-title"><Users size={14} /> PREVIEW SOCIAL</h3>
-                      <button onClick={() => setActiveTab("social")} className="hud-mini-btn">Abrir</button>
-                    </div>
-                    <div className="space-y-2">
-                      {socialStatusBoard.slice(0, 3).map((entry, i) => (
-                        <div key={entry.id} className="hud-subpanel p-3 flex items-center justify-between gap-3">
-                          <div className="flex items-center gap-2">
-                            <div className="h-8 w-8 rounded-full overflow-hidden border border-cyan-500/40 bg-slate-950/80">
-                              {entry.avatarUrl ? <img src={entry.avatarUrl} alt="avatar" className="h-full w-full object-cover" /> : <div className="h-full w-full grid place-items-center text-[10px] text-slate-400">?</div>}
-                            </div>
-                            <div>
-                              <p className="text-xs text-slate-400">#{i + 1} @{entry.username}</p>
-                              <p className="text-sm font-bold text-cyan-100">{entry.name}</p>
-                            </div>
-                          </div>
-                          <div className="text-right"><p className="text-xs text-fuchsia-300">{getRank(entry.power)}</p><p className="text-sm font-black text-cyan-200">{entry.power}</p></div>
-                        </div>
-                      ))}
-                      {socialStatusBoard.length === 0 && <div className="hud-subpanel p-3 text-xs text-slate-400">Sem dados sociais ainda.</div>}
-                    </div>
-                  </section>
+                  <section className="hud-panel p-4"><h3 className="hud-title mb-3">TITULO ATIVO</h3><p className="text-sm font-bold text-cyan-100">{equippedTitle?.name || "Sem titulo"}</p><p className="text-xs text-slate-400 mt-2">{equippedTitle?.description || "Conquiste titulos por XP e missao."}</p></section>
                 </aside>
               </div>
             )}
 
             {activeTab === "analytics" && (
               <div className="grid gap-4 lg:grid-cols-2">
-                <section className="hud-panel p-5">
-                  <h3 className="hud-title mb-3"><TrendingUp size={14} /> ATIVIDADE (7 DIAS)</h3>
-                  <div className="h-72"><ResponsiveContainer><AreaChart data={activitySeries}><CartesianGrid stroke="#1f2a4f" vertical={false} strokeDasharray="4 4" /><XAxis dataKey="day" stroke="#6ea7d8" fontSize={11} tickLine={false} axisLine={false} /><YAxis domain={[0, 6]} allowDecimals={false} stroke="#6ea7d8" fontSize={11} tickLine={false} axisLine={false} /><Tooltip contentStyle={{ background: "#050b1f", border: "1px solid #1f2a4f", borderRadius: "10px", color: "#cdeaff" }} /><Area dataKey="count" type="monotone" stroke="#00d9ff" fill="#00d9ff" fillOpacity={0.2} /></AreaChart></ResponsiveContainer></div>
-                </section>
-
-                <section className="hud-panel p-5">
-                  <h3 className="hud-title mb-3"><Activity size={14} /> ESTATISTICAS DE COMBATE</h3>
-                  <div className="h-72"><ResponsiveContainer><BarChart data={stats}><CartesianGrid stroke="#1f2a4f" vertical={false} strokeDasharray="4 4" /><XAxis dataKey="subject" stroke="#6ea7d8" fontSize={10} tickLine={false} axisLine={false} /><Bar dataKey="A" fill="#00d9ff" radius={[4, 4, 0, 0]} /></BarChart></ResponsiveContainer></div>
-                </section>
+                <section className="hud-panel p-5"><h3 className="hud-title mb-3"><TrendingUp size={14} /> ATIVIDADE (7 DIAS)</h3><div className="h-72"><ResponsiveContainer><AreaChart data={activitySeries}><CartesianGrid stroke="#1f2a4f" vertical={false} strokeDasharray="4 4" /><XAxis dataKey="day" stroke="#6ea7d8" fontSize={11} tickLine={false} axisLine={false} /><YAxis domain={[0, 6]} allowDecimals={false} stroke="#6ea7d8" fontSize={11} tickLine={false} axisLine={false} /><Tooltip contentStyle={{ background: "#050b1f", border: "1px solid #1f2a4f", borderRadius: "10px", color: "#cdeaff" }} /><Area dataKey="count" type="monotone" stroke="#00d9ff" fill="#00d9ff" fillOpacity={0.2} /></AreaChart></ResponsiveContainer></div></section>
+                <section className="hud-panel p-5"><h3 className="hud-title mb-3"><Activity size={14} /> ESTATISTICAS DE COMBATE</h3><div className="h-72"><ResponsiveContainer><BarChart data={stats}><CartesianGrid stroke="#1f2a4f" vertical={false} strokeDasharray="4 4" /><XAxis dataKey="subject" stroke="#6ea7d8" fontSize={10} tickLine={false} axisLine={false} /><Bar dataKey="A" fill="#00d9ff" radius={[4, 4, 0, 0]} /></BarChart></ResponsiveContainer></div></section>
               </div>
             )}
 
             {activeTab === "titles" && (
               <section className="hud-panel p-5">
                 <div className="flex flex-wrap items-center justify-between gap-2 mb-4"><h3 className="hud-title"><Award size={14} /> TITULOS</h3><span className="text-xs text-slate-400 uppercase tracking-[0.2em]">{titles.length} desbloqueados</span></div>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                  {titles.slice().sort((a, b) => a.xpRequired - b.xpRequired).map((title) => (
-                    <div key={title.id} className={`hud-subpanel p-4 ${RARITY_STYLE[title.rarity].glow}`}>
-                      <div className="flex items-start justify-between gap-2">
-                        <div><p className="font-bold text-lg leading-none">{title.name}</p><p className="mt-2 text-xs text-slate-400">{title.description}</p></div>
-                        <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${RARITY_STYLE[title.rarity].badge}`}>{title.rarity}</span>
-                      </div>
-                      <div className="mt-4 flex items-center justify-between gap-2">
-                        <span className="text-xs text-slate-400">XP req: {title.xpRequired}</span>
-                        <button onClick={() => setActiveTitleId(title.id)} className={`hud-mini-btn ${activeTitleId === title.id ? "!bg-emerald-700" : ""}`}>{activeTitleId === title.id ? "Ativo" : "Ativar"}</button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{titles.slice().sort((a, b) => a.xpRequired - b.xpRequired).map((title) => <div key={title.id} className={`hud-subpanel p-4 ${RARITY_STYLE[title.rarity].glow}`}><div className="flex items-start justify-between gap-2"><div><p className="font-bold text-lg leading-none">{title.name}</p><p className="mt-2 text-xs text-slate-400">{title.description}</p></div><span className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${RARITY_STYLE[title.rarity].badge}`}>{title.rarity}</span></div><div className="mt-4 flex items-center justify-between gap-2"><span className="text-xs text-slate-400">XP req: {title.xpRequired}</span><button onClick={() => setActiveTitleId(title.id)} className={`hud-mini-btn ${activeTitleId === title.id ? "!bg-emerald-700" : ""}`}>{activeTitleId === title.id ? "Ativo" : "Ativar"}</button></div></div>)}</div>
               </section>
             )}
 
@@ -991,18 +1012,18 @@ export default function SovereignApp() {
                   <h3 className="hud-title mb-4"><Users size={14} /> RANK DE AMIGOS</h3>
                   <div className="space-y-3 max-h-[620px] overflow-auto pr-1">
                     {socialStatusBoard.length === 0 && <div className="hud-subpanel p-4 text-sm text-slate-400">Sem status ainda. O ranking atualiza quando os amigos completam missoes.</div>}
-                    {socialStatusBoard.map((entry, index) => (
-                      <article key={entry.id} className="hud-subpanel p-4 flex items-center justify-between gap-3">
+                    {socialStatusBoard.map((entry) => (
+                      <button key={entry.id} onClick={() => setSelectedFriendProfile(entry)} className="hud-subpanel p-4 flex w-full items-center justify-between gap-3 text-left hover:border-cyan-400/40 transition">
                         <div className="flex items-center gap-3">
-                          <div className="h-10 w-10 rounded-full overflow-hidden border border-cyan-500/40 bg-slate-950/80">{entry.avatarUrl ? <img src={entry.avatarUrl} alt="avatar" className="h-full w-full object-cover" /> : <div className="h-full w-full grid place-items-center text-cyan-200 font-black">#{index + 1}</div>}</div>
+                          <div className="h-10 w-10 rounded-full overflow-hidden border border-cyan-500/40 bg-slate-950/80">{entry.avatarUrl ? <img src={entry.avatarUrl} alt="avatar" className="h-full w-full object-cover" /> : <div className="h-full w-full grid place-items-center text-cyan-200 font-black">?</div>}</div>
                           <div>
                             <p className="text-sm font-bold text-cyan-100">{entry.name}</p>
                             <p className="text-[11px] text-slate-500">@{entry.username}</p>
                             <p className="text-[11px] text-slate-400">Atualizado em {new Date(entry.createdAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</p>
                           </div>
                         </div>
-                        <div className="text-right"><p className="text-xs uppercase tracking-[0.16em] text-fuchsia-300">{getRank(entry.power)}</p><p className="text-lg font-black text-cyan-200">{entry.power}</p><p className="text-[11px] text-slate-400">Nivel {entry.level}</p></div>
-                      </article>
+                        <div className="text-right"><p className="text-xs uppercase tracking-[0.16em] text-fuchsia-300">{entry.rank}</p><p className="text-lg font-black text-cyan-200">{entry.power}</p><p className="text-[11px] text-slate-400">Nivel {entry.level}</p></div>
+                      </button>
                     ))}
                   </div>
                 </section>
@@ -1033,10 +1054,13 @@ export default function SovereignApp() {
                       {myFriends.length === 0 && <div className="hud-subpanel p-3 text-xs text-slate-400">Nenhum amigo adicionado.</div>}
                       {myFriends.map((friend) => (
                         <div key={friend.profile.id} className="hud-subpanel p-3 flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2">
+                          <button onClick={() => {
+                            const fromBoard = socialStatusBoard.find((entry) => entry.id === friend.profile.id);
+                            if (fromBoard) setSelectedFriendProfile(fromBoard);
+                          }} className="flex items-center gap-2 text-left">
                             <div className="h-8 w-8 rounded-full overflow-hidden border border-cyan-500/30 bg-slate-950/70">{friend.profile.avatar_url ? <img src={friend.profile.avatar_url} alt="avatar" className="h-full w-full object-cover" /> : <div className="h-full w-full grid place-items-center text-[10px] text-slate-400">?</div>}</div>
                             <div><p className="text-sm font-bold text-cyan-100">{friend.profile.hunter_name}</p><p className="text-[11px] text-slate-500">@{friend.profile.username}</p></div>
-                          </div>
+                          </button>
                           <button onClick={() => void removeFriend(friend.friendshipId)} className="hud-mini-btn !bg-rose-900/60">Remover</button>
                         </div>
                       ))}
@@ -1054,6 +1078,14 @@ export default function SovereignApp() {
                   <input value={hunterNameDraft} onChange={(e) => setHunterNameDraft(e.target.value)} className="hud-input" placeholder="Nome do cacador" />
                   <div className="flex flex-wrap gap-2"><input type="file" accept="image/*" onChange={onAvatarChange} className="hud-input max-w-sm" /><button onClick={updateProfile} className="hud-mini-btn">Salvar Perfil</button><button onClick={logout} className="hud-mini-btn !bg-slate-700">Sair</button></div>
                 </div>
+
+                <div className="hud-subpanel p-4 space-y-3 mb-4">
+                  <p className="text-sm font-semibold text-slate-200">Web Push Real</p>
+                  <p className="text-xs text-slate-400">Ative para receber lembretes mesmo com o site fechado.</p>
+                  <button onClick={enablePushNotifications} className="hud-mini-btn !bg-cyan-700 flex items-center gap-2">{pushEnabled ? <Bell size={14} /> : <BellOff size={14} />} {pushEnabled ? "Push ativo" : "Ativar Push"}</button>
+                  {pushStatus && <p className="text-xs text-cyan-200">{pushStatus}</p>}
+                </div>
+
                 <div className="hud-subpanel p-4 space-y-4">
                   <div><p className="text-sm font-semibold text-slate-200">Resetar progresso</p><p className="text-xs text-slate-400 mt-1">Remove XP, nivel, missoes, titulos, boss semanal e dados salvos.</p></div>
                   <button onClick={resetProgress} className="hud-action-btn !border-rose-500/60 !text-rose-200 !bg-rose-900/40 hover:!border-rose-400"><X size={14} /> RESETAR PROGRESSO</button>
@@ -1072,6 +1104,21 @@ export default function SovereignApp() {
             <h2 className="text-2xl font-black tracking-[0.1em] text-cyan-200">TITULO OBTIDO</h2>
             <p className="mt-2 text-slate-200 font-bold">{titleDropResult}</p>
             <button onClick={() => setTitleDropResult(null)} className="hud-action-btn mt-5">FECHAR</button>
+          </div>
+        </div>
+      )}
+
+      {selectedFriendProfile && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+          <div className="hud-panel w-full max-w-md p-6">
+            <div className="flex items-center justify-between mb-4"><h3 className="hud-title">PERFIL DO CACADOR</h3><button onClick={() => setSelectedFriendProfile(null)} className="hud-mini-btn !bg-slate-700">Fechar</button></div>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="h-14 w-14 rounded-xl overflow-hidden border border-cyan-500/40 bg-slate-950/70">{selectedFriendProfile.avatarUrl ? <img src={selectedFriendProfile.avatarUrl} alt="avatar" className="h-full w-full object-cover" /> : <div className="h-full w-full grid place-items-center text-cyan-300">?</div>}</div>
+              <div><p className="text-lg font-black text-cyan-100">{selectedFriendProfile.name}</p><p className="text-xs text-slate-500">@{selectedFriendProfile.username}</p><p className="text-xs text-fuchsia-300">{selectedFriendProfile.rank}</p></div>
+            </div>
+            <div className="grid grid-cols-2 gap-2 mb-4"><div className="hud-chip"><span>NIVEL</span><strong>{selectedFriendProfile.level}</strong></div><div className="hud-chip"><span>POWER</span><strong>{selectedFriendProfile.power}</strong></div></div>
+            <p className="text-xs text-slate-400 mb-2">Titulo ativo: <span className="text-cyan-200">{selectedFriendProfile.title}</span></p>
+            <div className="grid grid-cols-4 gap-2 text-center">{STAT_NAMES.map((name, idx) => <div key={name} className="hud-stat-mini"><span>{statAbbr(name)}</span><strong>{selectedFriendProfile.stats[idx] ?? 0}</strong></div>)}</div>
           </div>
         </div>
       )}
