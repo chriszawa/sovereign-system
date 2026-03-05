@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import React, { useEffect, useMemo, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
@@ -310,7 +310,6 @@ export default function SovereignApp() {
   const [profilesById, setProfilesById] = useState<Record<string, Profile>>({});
   const [socialPosts, setSocialPosts] = useState<SocialPost[]>([]);
   const [friendInput, setFriendInput] = useState("");
-  const [newStatus, setNewStatus] = useState("");
   const [socialFeedback, setSocialFeedback] = useState<string | null>(null);
   const [socialLoading, setSocialLoading] = useState(false);
 
@@ -361,7 +360,7 @@ export default function SovereignApp() {
       const activeSession = data.session ?? null;
       setSession(activeSession);
       if (activeSession?.user) {
-        await loadProfile(activeSession.user.id);
+        await loadProfile(activeSession.user);
       }
       setAuthLoading(false);
     });
@@ -369,7 +368,7 @@ export default function SovereignApp() {
     const { data: authListener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession);
       if (nextSession?.user) {
-        void loadProfile(nextSession.user.id);
+        void loadProfile(nextSession.user);
       } else {
         setCurrentUserId(null);
         setCurrentUser(null);
@@ -445,7 +444,34 @@ export default function SovereignApp() {
       .filter((v): v is { friendshipId: string; profile: Profile } => Boolean(v));
   }, [acceptedFriendships, profilesById, currentUserId]);
 
-  const socialFeed = useMemo(() => socialPosts, [socialPosts]);
+  const socialStatusBoard = useMemo(() => {
+    if (!currentUserId) return [] as Array<{ id: string; name: string; username: string; level: number; power: number; createdAt: string }>;
+
+    const allowedIds = new Set<string>([currentUserId, ...myFriends.map((f) => f.profile.id)]);
+    const latestByAuthor = new Map<string, SocialPost>();
+
+    for (const post of socialPosts) {
+      if (!allowedIds.has(post.author_id)) continue;
+      const prev = latestByAuthor.get(post.author_id);
+      if (!prev || new Date(post.created_at).getTime() > new Date(prev.created_at).getTime()) {
+        latestByAuthor.set(post.author_id, post);
+      }
+    }
+
+    return [...latestByAuthor.values()]
+      .map((post) => {
+        const profile = profilesById[post.author_id];
+        return {
+          id: post.author_id,
+          name: profile?.hunter_name || post.hunter_name_snapshot,
+          username: profile?.username || `user_${post.author_id.slice(0, 8)}`,
+          level: post.level_snapshot,
+          power: post.power_snapshot,
+          createdAt: post.created_at,
+        };
+      })
+      .sort((a, b) => b.power - a.power || b.level - a.level);
+  }, [socialPosts, myFriends, currentUserId, profilesById]);
 
   const getRank = () => {
     if (powerScore < 80) return { title: "RANK E", color: "text-slate-400" };
@@ -456,7 +482,15 @@ export default function SovereignApp() {
     return { title: "RANK S", color: "text-amber-300" };
   };
 
-  const getPublicProfile = async (userId: string): Promise<Profile> => {
+  const getRankByPower = (score: number) => {
+    if (score < 80) return "RANK E";
+    if (score < 220) return "RANK D";
+    if (score < 500) return "RANK C";
+    if (score < 900) return "RANK B";
+    if (score < 1600) return "RANK A";
+    return "RANK S";
+  };
+  const getPublicProfile = async (userId: string, metadata?: Record<string, unknown>): Promise<Profile> => {
     if (!supabase) throw new Error("Supabase nao configurado.");
 
     const { data, error } = await supabase
@@ -469,11 +503,17 @@ export default function SovereignApp() {
 
     if (data) return data as Profile;
 
-    const fallbackUsername = `user_${userId.slice(0, 8)}`;
+    const metadataUsernameRaw = typeof metadata?.username === "string" ? metadata.username : "";
+    const metadataHunterRaw = typeof metadata?.hunter_name === "string" ? metadata.hunter_name : "";
+
+    const metadataUsername = metadataUsernameRaw.trim().toLowerCase();
+    const fallbackUsername = metadataUsername.length >= 3 ? metadataUsername : `user_${userId.slice(0, 8)}`;
+    const fallbackHunter = metadataHunterRaw.trim() || fallbackUsername.toUpperCase();
+
     const fallbackProfile: Profile = {
       id: userId,
       username: fallbackUsername,
-      hunter_name: fallbackUsername.toUpperCase(),
+      hunter_name: fallbackHunter,
       avatar_url: null,
     };
 
@@ -482,9 +522,9 @@ export default function SovereignApp() {
     return fallbackProfile;
   };
 
-  const loadProfile = async (userId: string) => {
+  const loadProfile = async (user: { id: string; user_metadata?: Record<string, unknown> }) => {
     try {
-      const profile = await getPublicProfile(userId);
+      const profile = await getPublicProfile(user.id, user.user_metadata);
       setCurrentUserId(profile.id);
       setCurrentUser(profile.username);
       setHunterName(profile.hunter_name || "CACADOR");
@@ -598,6 +638,12 @@ export default function SovereignApp() {
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
+        options: {
+          data: {
+            username,
+            hunter_name: username.toUpperCase(),
+          },
+        },
       });
 
       if (error) {
@@ -607,7 +653,14 @@ export default function SovereignApp() {
 
       const createdUser = data.user;
       if (!createdUser) {
-        setAuthError("Conta criada. Verifique seu email para confirmar e depois faça login.");
+        setAuthError("Conta criada. Verifique seu email para confirmar e depois faca login.");
+        return;
+      }
+
+      if (!data.session) {
+        setAuthError("Conta criada. Confirme o email e depois faca login.");
+        setAuthMode("login");
+        setAuthPass("");
         return;
       }
 
@@ -619,11 +672,13 @@ export default function SovereignApp() {
       });
 
       if (profileError) {
-        setAuthError(profileError.message);
+        setAuthError("Conta criada. Confirme o email e depois faca login.");
+        setAuthMode("login");
+        setAuthPass("");
         return;
       }
 
-      setAuthError("Conta criada. Faça login para entrar.");
+      setAuthError("Conta criada. Faca login para entrar.");
       setAuthMode("login");
       setAuthPass("");
       return;
@@ -640,7 +695,7 @@ export default function SovereignApp() {
     }
 
     setSession(data.session ?? null);
-    if (data.user) await loadProfile(data.user.id);
+    if (data.user) await loadProfile(data.user);
     setAuthPass("");
   };
 
@@ -676,7 +731,7 @@ export default function SovereignApp() {
     }
 
     setHunterName(cleanName.toUpperCase());
-    await loadProfile(currentUserId);
+    await loadProfile({ id: currentUserId, user_metadata: { username: currentUser, hunter_name: cleanName.toUpperCase() } });
     await loadSocialData(currentUserId);
   };
 
@@ -730,7 +785,7 @@ export default function SovereignApp() {
         await supabase.from("friendships").update({ status: "accepted" }).eq("id", existing.id);
         setSocialFeedback("Solicitacao aceita automaticamente.");
       } else {
-        setSocialFeedback("Vocês ja tem uma conexao pendente ou ativa.");
+        setSocialFeedback("VocÃªs ja tem uma conexao pendente ou ativa.");
       }
       await loadSocialData(currentUserId);
       return;
@@ -768,36 +823,19 @@ export default function SovereignApp() {
     await loadSocialData(currentUserId);
   };
 
-  const postStatus = async () => {
+  const publishStatusSnapshot = async (levelSnapshot: number, powerSnapshot: number) => {
     if (!supabase || !currentUserId) return;
-    const content = newStatus.trim();
-    if (!content) {
-      setSocialFeedback("Escreva um status antes de publicar.");
-      return;
-    }
 
-    const { error } = await supabase.from("posts").insert({
+    await supabase.from("posts").insert({
       author_id: currentUserId,
       hunter_name_snapshot: hunterName,
       avatar_url_snapshot: avatarDataUrl,
-      content,
-      level_snapshot: level,
-      power_snapshot: powerScore,
+      content: `STATUS ${getRankByPower(powerSnapshot)} | LV ${levelSnapshot} | PWR ${powerSnapshot}`,
+      level_snapshot: levelSnapshot,
+      power_snapshot: powerSnapshot,
     });
 
-    if (error) {
-      setSocialFeedback("Nao foi possivel publicar.");
-      return;
-    }
-
-    setNewStatus("");
-    setSocialFeedback("Status publicado.");
     await loadSocialData(currentUserId);
-  };
-
-  const fillProgressStatus = () => {
-    const rank = getRank().title;
-    setNewStatus(`Nivel ${level} | ${rank} | Power ${powerScore} | Quests ${completedQuests.length}/${quests.length}`);
   };
   const addToInventory = (loot: LootItem) => {
     setInventory((prev) => {
@@ -879,6 +917,8 @@ export default function SovereignApp() {
       nextXp -= xpToLevel;
     }
 
+    const nextPower = Math.floor(nextStats.reduce((acc, curr) => acc + curr.A, 0) * (nextLevel / 5) + relicBonus);
+
     setXp(clamp(nextXp, 0, 99));
     setLevel(nextLevel);
     setStats(nextStats);
@@ -886,6 +926,8 @@ export default function SovereignApp() {
     setActivityLog(nextLog);
     setBossHp(nextBossHp);
     setBossDefeated(nextBossDef);
+
+    void publishStatusSnapshot(nextLevel, nextPower);
   };
 
   const openSupplyCrate = () => {
@@ -1306,65 +1348,34 @@ export default function SovereignApp() {
               </section>
             )}
 
-            {activeTab === "social" && (
+                        {activeTab === "social" && (
               <div className="grid gap-4 xl:grid-cols-[1.4fr_1fr]">
                 <section className="hud-panel p-5">
-                  <h3 className="hud-title mb-4"><Users size={14} /> AREA SOCIAL</h3>
+                  <h3 className="hud-title mb-4"><Users size={14} /> RANK DE AMIGOS</h3>
 
-                  <div className="hud-subpanel p-3 space-y-2 mb-4">
-                    <textarea
-                      value={newStatus}
-                      onChange={(e) => setNewStatus(e.target.value)}
-                      placeholder="Compartilhe seu progresso com seus amigos..."
-                      className="hud-input min-h-24 resize-y"
-                      maxLength={280}
-                    />
-                    <div className="flex flex-wrap gap-2">
-                      <button onClick={fillProgressStatus} className="hud-mini-btn">Preencher com progresso</button>
-                      <button onClick={() => void postStatus()} className="hud-mini-btn !bg-cyan-700">Publicar</button>
-                    </div>
-                    <p className="text-[11px] text-slate-400">{newStatus.length}/280</p>
-                  </div>
-
-                  <div className="space-y-3 max-h-[520px] overflow-auto pr-1">
-                    {socialFeed.length === 0 && (
+                  <div className="space-y-3 max-h-[620px] overflow-auto pr-1">
+                    {socialStatusBoard.length === 0 && (
                       <div className="hud-subpanel p-4 text-sm text-slate-400">
-                        Seu feed esta vazio. Adicione amigos e publique um status.
+                        Sem status ainda. O ranking atualiza automaticamente quando os amigos completam missoes.
                       </div>
                     )}
 
-                    {socialFeed.map((post) => (
-                      <article key={post.id} className="hud-subpanel p-4">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-3">
-                            <div className="hud-avatar !w-10 !h-10 overflow-hidden">
-                              {post.avatar_url_snapshot ? (
-                                // eslint-disable-next-line @next/next/no-img-element
-                                <img src={post.avatar_url_snapshot} alt="avatar" className="h-full w-full object-cover" />
-                              ) : (
-                                <Sparkles className="text-cyan-300" size={14} />
-                              )}
-                            </div>
-                            <div>
-                              <p className="text-sm font-bold text-cyan-100">{post.hunter_name_snapshot}</p>
-                              <p className="text-[11px] text-slate-400">@{profilesById[post.author_id]?.username || "user"}</p>
-                            </div>
+                    {socialStatusBoard.map((entry, index) => (
+                      <article key={entry.id} className="hud-subpanel p-4 flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <div className="h-10 w-10 rounded-lg border border-cyan-500/30 bg-slate-950/70 grid place-items-center text-cyan-200 font-black">
+                            #{index + 1}
                           </div>
-                          <p className="text-[11px] text-slate-400">
-                            {new Date(post.created_at).toLocaleString("pt-BR", {
-                              day: "2-digit",
-                              month: "2-digit",
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
-                          </p>
+                          <div>
+                            <p className="text-sm font-bold text-cyan-100">{entry.name}</p>
+                            <p className="text-[11px] text-slate-500">@{entry.username}</p>
+                            <p className="text-[11px] text-slate-400">Atualizado em {new Date(entry.createdAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</p>
+                          </div>
                         </div>
-
-                        <p className="text-sm text-slate-100 mt-3 whitespace-pre-wrap">{post.content}</p>
-
-                        <div className="mt-3 flex flex-wrap gap-2 text-[11px] uppercase tracking-[0.16em] text-slate-300">
-                          <span className="hud-stat-mini !w-auto !px-3 !py-1">Nivel {post.level_snapshot}</span>
-                          <span className="hud-stat-mini !w-auto !px-3 !py-1">Power {post.power_snapshot}</span>
+                        <div className="text-right">
+                          <p className="text-xs uppercase tracking-[0.16em] text-fuchsia-300">{getRankByPower(entry.power)}</p>
+                          <p className="text-lg font-black text-cyan-200">{entry.power}</p>
+                          <p className="text-[11px] text-slate-400">Nivel {entry.level}</p>
                         </div>
                       </article>
                     ))}
@@ -1378,10 +1389,10 @@ export default function SovereignApp() {
                       <input
                         value={friendInput}
                         onChange={(e) => setFriendInput(e.target.value)}
-                        placeholder="Usuario do amigo"
+                        placeholder="Usuario publico do amigo"
                         className="hud-input"
                       />
-                      <button onClick={addFriend} className="hud-icon-btn"><Plus size={14} /></button>
+                      <button onClick={() => void addFriend()} className="hud-icon-btn"><Plus size={14} /></button>
                     </div>
 
                     {socialFeedback && <p className="text-xs text-cyan-200 mb-3">{socialFeedback}</p>}
@@ -1412,7 +1423,6 @@ export default function SovereignApp() {
                           <div>
                             <p className="text-sm font-bold text-cyan-100">{friend.profile.hunter_name}</p>
                             <p className="text-[11px] text-slate-500">@{friend.profile.username}</p>
-                            <p className="text-[11px] text-slate-400">Conectado ao seu feed</p>
                           </div>
                           <button onClick={() => void removeFriend(friend.friendshipId)} className="hud-mini-btn !bg-rose-900/60">Remover</button>
                         </div>
@@ -1428,8 +1438,8 @@ export default function SovereignApp() {
                         <strong className="text-cyan-200">{myFriends.length}</strong>
                       </div>
                       <div className="hud-chip">
-                        <span>POSTS</span>
-                        <strong className="text-fuchsia-200">{socialPosts.filter((p) => p.author_id === currentUserId).length}</strong>
+                        <span>RANKING</span>
+                        <strong className="text-fuchsia-200">{socialStatusBoard.length}</strong>
                       </div>
                     </div>
                   </section>
@@ -1493,6 +1503,18 @@ export default function SovereignApp() {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
