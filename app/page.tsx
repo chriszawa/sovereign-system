@@ -42,6 +42,7 @@ import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 type Tab = "dashboard" | "analytics" | "inventory" | "social" | "settings";
 type Difficulty = "Facil" | "Medio" | "Dificil" | "Extremo";
+type QuestCategory = "Corpo" | "Estudos" | "Trabalho" | "Negocios";
 type Rarity = "Comum" | "Raro" | "Epico" | "Lendario";
 type LootType = "consumivel" | "reliquia" | "material";
 type AuthMode = "login" | "register";
@@ -53,7 +54,8 @@ type Quest = {
   id: string;
   title: string;
   difficulty: Difficulty;
-  statIndex: number;
+  category: QuestCategory;
+  statIndexes: number[];
   xpGain: number;
   statGain: number;
   completed: boolean;
@@ -111,15 +113,18 @@ const STORAGE_KEYS = {
 const BASE_STATS: Stat[] = [
   { subject: "Forca", A: 10 },
   { subject: "Inteligencia", A: 10 },
-  { subject: "Vitalidade", A: 10 },
   { subject: "Riqueza", A: 10 },
-  { subject: "Disciplina", A: 10 },
   { subject: "Foco", A: 10 },
-  { subject: "Social", A: 10 },
-  { subject: "Criatividade", A: 10 },
 ];
 
 const STAT_NAMES = BASE_STATS.map((s) => s.subject);
+
+const QUEST_CATEGORY_MAP: Record<QuestCategory, { label: string; statIndexes: number[] }> = {
+  Corpo: { label: "Corpo", statIndexes: [0, 3] },
+  Estudos: { label: "Estudos", statIndexes: [1, 3] },
+  Trabalho: { label: "Trabalho", statIndexes: [2, 1] },
+  Negocios: { label: "Negocios", statIndexes: [2, 3] },
+};
 
 const DIFFICULTY_MAP: Record<
   Difficulty,
@@ -196,7 +201,7 @@ const LOOT_POOL: LootItem[] = [
     name: "Chip de Disciplina",
     rarity: "Raro",
     type: "consumivel",
-    description: "Aumenta Disciplina em +2.",
+    description: "Aumenta Foco em +2.",
     value: 2,
   },
   {
@@ -295,10 +300,10 @@ export default function SovereignApp() {
   const [bossDefeated, setBossDefeated] = useState(false);
   const [quests, setQuests] = useState<Quest[]>([]);
   const [showAddQuest, setShowAddQuest] = useState(false);
-  const [newQuest, setNewQuest] = useState<{ title: string; difficulty: Difficulty; statIndex: number }>({
+  const [newQuest, setNewQuest] = useState<{ title: string; difficulty: Difficulty; category: QuestCategory }>({
     title: "",
     difficulty: "Medio",
-    statIndex: 0,
+    category: "Corpo",
   });
 
   const [inventory, setInventory] = useState<InventoryEntry[]>([]);
@@ -335,11 +340,26 @@ export default function SovereignApp() {
     setQuests(
       loadedQuests.map((q) => {
         const difficulty = normalizeDifficulty(String(q.difficulty));
+        const rawCategory = String((q as { category?: string }).category || "Corpo").toLowerCase();
+        const category: QuestCategory = rawCategory.includes("estud")
+          ? "Estudos"
+          : rawCategory.includes("trabalh")
+            ? "Trabalho"
+            : rawCategory.includes("negoc")
+              ? "Negocios"
+              : "Corpo";
+
+        const oldStatIndex = clamp(Number((q as { statIndex?: number }).statIndex) || 0, 0, STAT_NAMES.length - 1);
+        const parsedStatIndexes = Array.isArray((q as { statIndexes?: number[] }).statIndexes)
+          ? (q as { statIndexes: number[] }).statIndexes.map((idx) => clamp(Number(idx) || 0, 0, STAT_NAMES.length - 1))
+          : [oldStatIndex];
+
         return {
           id: String(q.id),
           title: String(q.title || "Missao"),
           difficulty,
-          statIndex: clamp(Number(q.statIndex) || 0, 0, STAT_NAMES.length - 1),
+          category,
+          statIndexes: parsedStatIndexes.length > 0 ? parsedStatIndexes : QUEST_CATEGORY_MAP[category].statIndexes,
           xpGain: DIFFICULTY_MAP[difficulty].xp,
           statGain: DIFFICULTY_MAP[difficulty].stat,
           completed: Boolean(q.completed),
@@ -857,11 +877,13 @@ export default function SovereignApp() {
     if (!newQuest.title.trim()) return;
 
     const diff = DIFFICULTY_MAP[newQuest.difficulty];
+    const questCategory = QUEST_CATEGORY_MAP[newQuest.category];
     const quest: Quest = {
       id: typeof crypto !== "undefined" ? crypto.randomUUID() : String(Date.now()),
       title: newQuest.title.trim(),
       difficulty: newQuest.difficulty,
-      statIndex: newQuest.statIndex,
+      category: newQuest.category,
+      statIndexes: questCategory.statIndexes,
       xpGain: diff.xp,
       statGain: diff.stat,
       completed: false,
@@ -869,7 +891,7 @@ export default function SovereignApp() {
 
     setQuests((prev) => [quest, ...prev]);
     setShowAddQuest(false);
-    setNewQuest({ title: "", difficulty: "Medio", statIndex: 0 });
+    setNewQuest({ title: "", difficulty: "Medio", category: "Corpo" });
   };
 
   const completeQuest = (id: string) => {
@@ -884,9 +906,13 @@ export default function SovereignApp() {
       nextXp -= xpToLevel;
     }
 
-    const nextStats = stats.map((s, i) =>
-      i === quest.statIndex ? { ...s, A: clamp(s.A + quest.statGain, 0, 100) } : s
-    );
+    const nextStats = stats.map((s, i) => {
+      const idxInQuest = quest.statIndexes.indexOf(i);
+      if (idxInQuest === -1) return s;
+
+      const gain = idxInQuest === 0 ? quest.statGain : Math.max(1, Math.floor(quest.statGain * 0.6));
+      return { ...s, A: clamp(s.A + gain, 0, 100) };
+    });
     const nextQuests = quests.map((q) => (q.id === id ? { ...q, completed: true } : q));
 
     const today = getTodayStr();
@@ -954,7 +980,7 @@ export default function SovereignApp() {
 
     if (item.id === "discipline_chip") {
       setStats((prev) =>
-        prev.map((s, i) => (i === 4 ? { ...s, A: clamp(s.A + item.value, 0, 100) } : s))
+        prev.map((s, i) => (i === 3 ? { ...s, A: clamp(s.A + item.value, 0, 100) } : s))
       );
     }
 
@@ -983,7 +1009,7 @@ export default function SovereignApp() {
     setBossDefeated(false);
     setQuests([]);
     setShowAddQuest(false);
-    setNewQuest({ title: "", difficulty: "Medio", statIndex: 0 });
+    setNewQuest({ title: "", difficulty: "Medio", category: "Corpo" });
     setInventory([]);
     setGold(60);
     setActiveRelicId(null);
@@ -1172,12 +1198,12 @@ export default function SovereignApp() {
                           <option>Extremo</option>
                         </select>
                         <select
-                          value={newQuest.statIndex}
-                          onChange={(e) => setNewQuest((p) => ({ ...p, statIndex: Number(e.target.value) }))}
+                          value={newQuest.category}
+                          onChange={(e) => setNewQuest((p) => ({ ...p, category: e.target.value as QuestCategory }))}
                           className="hud-input"
                         >
-                          {STAT_NAMES.map((n, i) => (
-                            <option key={n} value={i}>{n}</option>
+                          {Object.keys(QUEST_CATEGORY_MAP).map((cat) => (
+                            <option key={cat} value={cat}>{cat}</option>
                           ))}
                         </select>
                       </div>
@@ -1199,7 +1225,7 @@ export default function SovereignApp() {
                         <div className="flex-1 text-left">
                           <h4 className="font-bold text-lg leading-none">{q.title}</h4>
                           <p className={`mt-2 text-xs uppercase tracking-[0.2em] ${DIFFICULTY_MAP[q.difficulty].color}`}>
-                            {q.difficulty} +{q.xpGain} XP +{q.statGain} {STAT_NAMES[q.statIndex]}
+                            {q.difficulty} +{q.xpGain} XP | {q.category} | {STAT_NAMES[q.statIndexes[0]]} + {STAT_NAMES[q.statIndexes[1]] || STAT_NAMES[q.statIndexes[0]]}
                           </p>
                         </div>
                         <Target size={16} className="text-cyan-400" />
@@ -1503,6 +1529,26 @@ export default function SovereignApp() {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
